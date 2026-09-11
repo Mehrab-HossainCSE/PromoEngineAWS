@@ -10,22 +10,30 @@
 #
 # Configuration reaches the host from two places:
 #
-#   1. The repository's own .env - database name, password and the deployment
-#      tunables. Committed, so it is version-controlled alongside the code.
-#   2. These five GitHub secrets, which must not be committed:
+#   1. The repository's own .env - non-secret deployment tunables only: tenant
+#      database prefix, published port, log level. Committed, so it is
+#      version-controlled alongside the code.
+#   2. These seven GitHub secrets, none of which is ever committed:
 #
-#   DOCKER_USERNAME  - Docker Hub login, image namespace, and DOCKER_USERNAME
-#                      in the server env file (docker-compose.yml reads it to
-#                      resolve the image names).
-#   DOCKER_PASSWORD  - Docker Hub access token. Used to log in on the runner
-#                      (to push) and on EC2 (to pull).
-#   AWS_HOST         - EC2 public DNS or IP: the SSH target, and the origin
-#                      used for the CORS allow-list.
-#   AWS_USER         - EC2 login user (ec2-user on Amazon Linux, ubuntu on Ubuntu).
-#   AWS_KEY          - private half of the EC2 key pair, PEM.
+#   DOCKER_USERNAME   - Docker Hub login, image namespace, and DOCKER_USERNAME
+#                       in the server env file (docker-compose.yml reads it to
+#                       resolve the image names).
+#   DOCKER_PASSWORD   - Docker Hub access token. Used to log in on the runner
+#                       (to push) and on EC2 (to pull).
+#   AWS_HOST          - EC2 public DNS or IP: the SSH target, and the origin
+#                       used for the CORS allow-list.
+#   AWS_USER          - EC2 login user (ec2-user on Amazon Linux, ubuntu on Ubuntu).
+#   AWS_KEY           - private half of the EC2 key pair, PEM.
+#   POSTGRES_DB       - control-plane catalog database name. Becomes POSTGRES_DB
+#                       on the postgres container and Database= in
+#                       ConnectionStrings__Catalog.
+#   POSTGRES_PASSWORD - PostgreSQL superuser password. Becomes POSTGRES_PASSWORD
+#                       on the postgres container and Password= in BOTH the
+#                       catalog and the tenant-provisioning connection strings.
 #
 # The two files are copied separately and merged by deploy.sh, secrets last, so
-# a secret always wins over a committed value. No secret is ever echoed.
+# a secret always wins over a committed value. No secret is ever echoed: GitHub
+# masks them in the log, and the file travels over the encrypted SSH channel.
 # =============================================================================
 
 name: Deploy PromoEngine
@@ -136,14 +144,33 @@ jobs:
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           AWS_HOST: ${{ secrets.AWS_HOST }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
         run: |
           umask 077
           {
             echo "DOCKER_USERNAME=${DOCKER_USERNAME}"
             echo "IMAGE_TAG=${GITHUB_SHA}"
             echo "PUBLIC_ORIGIN=http://${AWS_HOST}"
+            echo "POSTGRES_DB=${POSTGRES_DB}"
+            echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
           } > env.ci
           echo "Wrote the secret overlay with $(wc -l < env.ci) settings."
+
+          # Fail here, with a readable message, rather than 40 seconds later on
+          # the EC2 host. An unset secret expands to an empty string, and the
+          # merge on the host skips empty values, so the symptom would
+          # otherwise be a confusing "POSTGRES_PASSWORD is not set" from a file
+          # the pipeline just wrote.
+          missing=""
+          [ -n "${POSTGRES_PASSWORD}" ] || missing="${missing} POSTGRES_PASSWORD"
+          [ -n "${POSTGRES_DB}" ]       || missing="${missing} POSTGRES_DB"
+          [ -n "${DOCKER_USERNAME}" ]   || missing="${missing} DOCKER_USERNAME"
+
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing repository secret(s):${missing} - add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
 
       - name: Copy deployment files to EC2
         env:

@@ -17,7 +17,7 @@ developer machine creates it on the PostgreSQL container in production.
 | [PromoFrontend/nginx/default.conf](PromoFrontend/nginx/default.conf) | SPA routing, `/api` reverse proxy, caching, security headers |
 | [PromoFrontend/.dockerignore](PromoFrontend/.dockerignore) | Keeps `node_modules` and `dist` out of the build context |
 | [docker-compose.yml](docker-compose.yml) | Production stack: frontend, backend, postgres |
-| [.env](.env) | **Committed** database configuration and deployment tunables |
+| [.env](.env) | **Committed** non-secret deployment tunables (no credentials) |
 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Build → push → deploy on every push to `main` |
 | [deploy/ec2-setup.sh](deploy/ec2-setup.sh) | One-time EC2 host preparation |
 | [deploy/deploy.sh](deploy/deploy.sh) | Server-side deploy: pull, restart, verify, prune |
@@ -136,18 +136,17 @@ Tenant connection strings are **persisted**, so a stored string must stay valid:
 
 > **`POSTGRES_PASSWORD` is only applied once, at `initdb`.** The PostgreSQL
 > image reads it when it initialises an *empty* data directory and ignores it
-> ever after. Change it in `.env` once the volume exists and the backend starts
-> presenting a password the server no longer accepts — an authentication
-> failure with no obvious cause. `deploy.sh` detects this case and prints the
-> fix, which is to change the password inside the database as well:
+> ever after. Change the `POSTGRES_PASSWORD` secret once the volume exists and
+> the backend starts presenting a password the server no longer accepts — an
+> authentication failure with no obvious cause. `deploy.sh` detects this case
+> and prints the fix, which is to change the password inside the database too:
 >
 > ```bash
 > docker compose exec postgres psql -U postgres -c \
 >   "ALTER USER postgres WITH PASSWORD '<the value now in .env>';"
 > ```
 >
-> This is why the deploy script hard-stops on the placeholder password shipped
-> in `.env`: getting it right before the first deploy avoids the whole problem.
+> Choosing the password before the first deploy avoids the whole problem.
 
 > **Rotating `POSTGRES_PASSWORD` requires a catalog update.** The old password is
 > baked into every stored tenant connection string. Change the password and
@@ -251,7 +250,7 @@ outside the scope of this containerisation work.
 Configuration arrives from two places, merged on the host in a defined order.
 
 ```
-repository .env            five GitHub secrets
+repository .env           seven GitHub secrets
   (committed)                (never committed)
        │                            │
        │  scp as env.repo           │  scp as env.ci
@@ -267,9 +266,10 @@ repository .env            five GitHub secrets
 ```
 
 A GitHub secret always wins over a committed value of the same name, so a
-setting can be overridden without editing the repository.
+setting can be overridden without editing the repository. **No credential is
+committed** — the repository file carries only non-secret tunables.
 
-### The five GitHub secrets
+### The seven GitHub secrets
 
 | Secret | Used in | How |
 |---|---|---|
@@ -278,29 +278,28 @@ setting can be overridden without editing the repository.
 | `AWS_HOST` | `deploy.yml` → `ssh-keyscan`, `scp`, `ssh`, public health check | also becomes `PUBLIC_ORIGIN` → `Cors__AllowedOrigins__0` |
 | `AWS_USER` | `deploy.yml` → SSH login user | `ssh "$AWS_USER@$AWS_HOST"` |
 | `AWS_KEY` | `deploy.yml` → written to `~/.ssh/deploy_key`, deleted afterwards | PEM private key for the EC2 key pair |
+| `POSTGRES_DB` | `env.ci` → host `.env` | `POSTGRES_DB` on the postgres container **and** `Database=` in `ConnectionStrings__Catalog` |
+| `POSTGRES_PASSWORD` | `env.ci` → host `.env` | `POSTGRES_PASSWORD` on the postgres container **and** `Password=` in the catalog **and** the tenant-provisioning connection string |
 
-### The committed [.env](.env)
+The `Assemble secret overlay` step fails the run immediately if
+`POSTGRES_PASSWORD`, `POSTGRES_DB` or `DOCKER_USERNAME` is empty. An unset
+secret expands to an empty string, and the merge on the host skips empty values
+— without that check the symptom would be a confusing "not set" error from a
+file the pipeline had just written.
+
+### The committed [.env](.env) — no credentials
 
 | Variable | Consumed by |
 |---|---|
-| `POSTGRES_USER` | postgres container; `Username=` in both connection strings |
-| `POSTGRES_DB` | postgres container; `Database=` in `ConnectionStrings__Catalog` |
-| `POSTGRES_PASSWORD` | postgres container; `Password=` in the catalog **and** the tenant-provisioning connection string |
+| `POSTGRES_USER` | postgres container; `Username=` in both connection strings. Not a secret on its own — the password is what protects the server |
 | `TENANT_DB_PREFIX` | `Tenancy__DatabaseNamePrefix` — the `PromoEngine_Tenant_` prefix |
 | `TENANT_SEED_SAMPLE_DATA` | `Tenancy__SeedSampleData` |
 | `HTTP_PORT` | host port the frontend publishes |
 | `LOG_LEVEL` | `Logging__LogLevel__Default` |
 
-> ⚠️ **This file is committed, so everyone who can read the repository can read
-> the database password.** That is an accepted trade-off for keeping GitHub
-> secrets down to five, and it is safe only while PostgreSQL has no published
-> port — which is how [docker-compose.yml](docker-compose.yml) ships it, so the
-> password is not usable from outside the EC2 host. **If the repository is
-> public, make it private**, or treat the password as disposable and rotate it
-> (see §3 — a rotation also requires rewriting the stored tenant connection
-> strings). To move it back into GitHub secrets later, delete the two lines
-> from `.env` and add them to the `Assemble secret overlay` step; the merge
-> skips empty values, so nothing else has to change.
+Everything in this file is safe to read. It exists so that infrastructure
+knobs stay under version control and reviewable in a diff, while anything that
+grants access lives in GitHub secrets.
 
 ### Two secrets that are generated rather than configured
 
@@ -333,7 +332,7 @@ what the host already has, so adding the secret later is safe.
 
 ### What stays out of the repository and the logs
 
-- The five GitHub secrets are never committed and never echoed.
+- The seven GitHub secrets are never committed and never echoed.
 - `/opt/promoengine/.env` is assembled on the host, `chmod 600`.
 - No secret is an argument to any command on the EC2 host, so none is visible in
   `ps`. The remote script arrives on `bash -s`'s stdin; the Docker Hub token is
@@ -403,14 +402,15 @@ network, and caps Docker's log growth.
 
 ### First deployment
 
-Set `POSTGRES_PASSWORD` in the committed [.env](.env) first — it ships with a
-placeholder, and the deploy refuses to run until it is a real value:
+Add all seven repository secrets first. Generate the database password with:
 
 ```bash
 openssl rand -base64 32 | tr -d '/+=' | cut -c1-32
 ```
 
-Then, with the five secrets configured:
+Keep it alphanumeric — `;` and `=` are delimiters in a connection string. The
+pipeline fails the run immediately if any required secret is missing, so there
+is no half-configured state to clean up. Then:
 
 ```bash
 git push origin main

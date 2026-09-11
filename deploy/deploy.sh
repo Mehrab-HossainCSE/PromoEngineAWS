@@ -18,8 +18,8 @@ APP_DIR="${APP_DIR:-/opt/promoengine}"
 ENV_FILE="${APP_DIR}/.env"
 
 # Two inputs, merged in this order so a GitHub secret always beats a committed
-# value: the repository's own .env (database configuration and tunables), then
-# the overlay the pipeline built from the five GitHub secrets.
+# value: the repository's own .env (non-secret tunables only), then the overlay
+# the pipeline built from the seven GitHub secrets.
 ENV_FROM_REPO="${APP_DIR}/env.repo"
 ENV_FROM_CI="${APP_DIR}/env.ci"
 
@@ -48,9 +48,9 @@ fi
 # 1. Build .env
 #
 # Three layers, lowest precedence first:
-#   1. env.repo - the .env committed in the repository: database name and
-#      password, tenant prefix, port, log level.
-#   2. env.ci   - built by the pipeline from the five GitHub secrets.
+#   1. env.repo - the .env committed in the repository: role name, tenant
+#      prefix, port, log level. No credentials.
+#   2. env.ci   - built by the pipeline from the seven GitHub secrets.
 #   3. generated - the JWT signing key and external API key, created once on
 #      this host and then preserved. Rotating the signing key on every push
 #      would sign every user out on every push.
@@ -123,29 +123,22 @@ default_env() {
   fi
 }
 
+# POSTGRES_DB is deliberately absent: it is a required secret, and defaulting
+# it would quietly create a catalog under a different name than intended if the
+# secret ever failed to reach this host. The check below fails loudly instead.
 default_env POSTGRES_USER           "postgres"
-default_env POSTGRES_DB             "PromoEngineCatalog"
 default_env IMAGE_TAG               "latest"
 default_env TENANT_DB_PREFIX        "PromoEngine_Tenant_"
 default_env TENANT_SEED_SAMPLE_DATA "true"
 default_env HTTP_PORT               "80"
 default_env LOG_LEVEL               "Information"
 
+# These three arrive from GitHub secrets. The pipeline already refuses to reach
+# this host with any of them empty, so this is the guard for a hand-run deploy.
 [[ -n "$(read_env POSTGRES_PASSWORD)" ]] \
-  || die "POSTGRES_PASSWORD is not set. It comes from the .env committed in the repository."
-
-# Refusing the shipped placeholder is worth a hard stop rather than a warning.
-# The PostgreSQL image applies POSTGRES_PASSWORD only when it initialises an
-# empty data directory; once this volume exists the password is fixed inside
-# the database. Deploying with the placeholder and correcting it later would
-# leave the backend presenting a password the server no longer accepts, which
-# surfaces as an authentication error with no obvious cause.
-if [[ "$(read_env POSTGRES_PASSWORD)" == "ChangeMe32CharAlphanumericSecret" ]]; then
-  die "POSTGRES_PASSWORD is still the placeholder shipped in the repository.
-       Set a real value in .env and push again. Generate one with:
-         openssl rand -base64 32 | tr -d '/+=' | cut -c1-32
-       Keep it alphanumeric: ';' and '=' are delimiters in a connection string."
-fi
+  || die "POSTGRES_PASSWORD is not set. It comes from the GitHub secret of the same name."
+[[ -n "$(read_env POSTGRES_DB)" ]] \
+  || die "POSTGRES_DB is not set. It comes from the GitHub secret of the same name."
 [[ -n "$(read_env DOCKER_USERNAME)" ]] \
   || die "DOCKER_USERNAME is not set. It comes from the GitHub secret of the same name."
 

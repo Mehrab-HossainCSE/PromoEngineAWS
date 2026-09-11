@@ -29,10 +29,14 @@ services:
       # backend issue CREATE DATABASE for each new tenant - see the multi-tenant
       # notes in DEPLOYMENT.md.
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Both of these come from GitHub secrets of the same name. They are
+      # required rather than defaulted: falling back to a guessable password,
+      # or silently creating the catalog under a name nobody chose, is worse
+      # than refusing to start.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set the POSTGRES_PASSWORD GitHub secret}
       # The control-plane catalog database (tenants, plans, subscriptions).
       # Tenant databases are created later, at run time, by the application.
-      POSTGRES_DB: ${POSTGRES_DB:-PromoEngineCatalog}
+      POSTGRES_DB: ${POSTGRES_DB:?set the POSTGRES_DB GitHub secret}
       # Deterministic collation, so tenant databases created by CREATE DATABASE
       # inherit the same sort order as the catalog regardless of host locale.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
@@ -55,7 +59,7 @@ services:
     healthcheck:
       # The backend depends_on waits on this, so it never starts against a
       # server that is still running initdb.
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-PromoEngineCatalog}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -95,7 +99,7 @@ services:
       # Host=postgres is the Compose service name, resolved by Docker DNS.
       # Using localhost here would point the backend at its own container.
       ConnectionStrings__Catalog: >-
-        Host=postgres;Port=5432;Database=${POSTGRES_DB:-PromoEngineCatalog};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD};Pooling=true;Minimum Pool Size=1;Maximum Pool Size=50;Timeout=30;Command Timeout=60
+        Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD};Pooling=true;Minimum Pool Size=1;Maximum Pool Size=50;Timeout=30;Command Timeout=60
 
       # -- database-per-tenant provisioning --------------------------------
       # "Local" means "create databases directly on this PostgreSQL server"
