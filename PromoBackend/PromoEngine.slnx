@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PromoEngine.Api/PromoEngine.Api.csproj" />
+    <Project Path="src/PromoEngine.Domain/PromoEngine.Domain.csproj" />
+    <Project Path="src/PromoEngine.Infrastructure/PromoEngine.Infrastructure.csproj" />
+  </Folder>
+</Solution>

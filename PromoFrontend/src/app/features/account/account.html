@@ -1,0 +1,131 @@
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Account &amp; workspace</h1>
+      <div class="page-head__sub">Your tenant, its subscription and the database behind it.</div>
+    </div>
+    <a class="btn" routerLink="/plans">Change plan</a>
+  </div>
+
+  @if (error()) {
+    <div class="alert alert--error">{{ error() }}</div>
+  }
+
+  <div class="grid grid--2 account__grid">
+    <div class="card">
+      <div class="card__head"><div class="card__title">Tenant</div></div>
+      <div class="card__body">
+        @if (auth.user(); as user) {
+          <dl class="kv">
+            <dt>Company</dt><dd>{{ user.companyName }}</dd>
+            <dt>Contact</dt><dd>{{ user.displayName }}</dd>
+            <dt>Email</dt><dd>{{ user.email }}</dd>
+            <dt>Role</dt><dd>{{ user.role }}</dd>
+            <dt>Tenant slug</dt><dd class="mono">{{ user.tenantSlug }}</dd>
+            <dt>Tenant id</dt><dd class="mono">{{ user.tenantId }}</dd>
+          </dl>
+
+          <p class="small muted" style="margin-top:10px">
+            A point of sale calling <span class="mono">get-applicable-promotions</span> sends one of
+            these as its <span class="mono">TenantId</span>, which is how the API knows to read your
+            database. The slug, the id and your email all work.
+          </p>
+        }
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><div class="card__title">Subscription</div></div>
+      <div class="card__body">
+        @if (auth.subscription(); as sub) {
+          <dl class="kv">
+            <dt>Plan</dt><dd class="strong">{{ sub.planName }}</dd>
+            <dt>Status</dt>
+            <dd><span class="badge" [class.badge--active]="sub.isActive">{{ sub.status }}</span></dd>
+            <dt>Started</dt><dd>{{ sub.startsAtUtc | date: 'mediumDate' }}</dd>
+            @if (sub.trialEndsAtUtc) {
+              <dt>Trial ends</dt><dd>{{ sub.trialEndsAtUtc | date: 'mediumDate' }}</dd>
+            }
+          </dl>
+        } @else {
+          <p class="small muted">No subscription yet. <a routerLink="/plans">Choose a plan</a> to unlock promotions.</p>
+        }
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><div class="card__title">Database</div></div>
+      <div class="card__body">
+        @if (loading()) {
+          <span class="spinner"></span>
+        } @else if (status(); as s) {
+          <dl class="kv">
+            <dt>Status</dt>
+            <dd><span class="badge" [class.badge--active]="s.isReady">{{ s.status }}</span></dd>
+            <dt>Provisioner</dt>
+            <dd>{{ s.provisioner === 'Aws' ? 'AWS RDS' : s.provisioner === 'Local' ? 'Local SQL Server' : '—' }}</dd>
+            <dt>Database</dt><dd class="mono">{{ s.databaseName || '—' }}</dd>
+            @if (s.provisionedAtUtc) {
+              <dt>Created</dt><dd>{{ s.provisionedAtUtc | date: 'medium' }}</dd>
+            }
+            @if (s.error) {
+              <dt>Error</dt><dd class="error-text">{{ s.error }}</dd>
+            }
+          </dl>
+          <p class="small muted account__note">
+            Your promotions, offers, items and locations live only in this database. No other
+            tenant can read it.
+          </p>
+        }
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">Campaigns</div>
+        <span class="badge">{{ campaigns().length }}</span>
+      </div>
+      <div class="card__body">
+        <p class="small muted">
+          Campaigns link related promotions together. They are reference data in your tenant database.
+        </p>
+
+        @if (campaignError()) {
+          <div class="alert alert--error">{{ campaignError() }}</div>
+        }
+
+        <div class="row account__campaign-form">
+          <input class="input" [value]="newCode()" (input)="newCode.set($any($event.target).value)"
+                 placeholder="CODE" maxlength="10" style="max-width:120px">
+          <input class="input" [value]="newDescription()" (input)="newDescription.set($any($event.target).value)"
+                 placeholder="Campaign description">
+          <button class="btn btn--primary" type="button" (click)="addCampaign()" [disabled]="savingCampaign()">
+            @if (savingCampaign()) { <span class="spinner"></span> } Add
+          </button>
+        </div>
+
+        @if (campaigns().length) {
+          <div class="table-wrap account__campaigns">
+            <table class="table">
+              <thead>
+                <tr><th style="width:110px">Code</th><th>Description</th><th style="width:44px"></th></tr>
+              </thead>
+              <tbody>
+                @for (campaign of campaigns(); track campaign.id) {
+                  <tr>
+                    <td class="mono">{{ campaign.code }}</td>
+                    <td class="small">{{ campaign.description }}</td>
+                    <td>
+                      <button class="icon-btn" type="button" (click)="deleteCampaign(campaign)"
+                              aria-label="Remove">×</button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </div>
+    </div>
+  </div>
+</div>

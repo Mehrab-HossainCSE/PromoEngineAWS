@@ -1,0 +1,49 @@
+.auth {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 52px 24px 70px;
+  display: grid;
+  grid-template-columns: minmax(0, 430px) 1fr;
+  gap: 54px;
+  align-items: start;
+}
+
+.auth__card { overflow: hidden; }
+
+.auth__head {
+  padding: 24px 26px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.auth__head h1 { font-size: 22px; margin-bottom: 5px; }
+
+.auth__body { padding: 22px 26px 26px; }
+
+.auth__tabs { width: 100%; margin-bottom: 20px; }
+.auth__tabs button { flex: 1; }
+
+.auth__foot { margin-top: 18px; text-align: center; }
+
+.auth__aside { padding-top: 22px; }
+.auth__aside h2 { margin-bottom: 18px; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+.steps li { display: flex; gap: 13px; align-items: flex-start; }
+
+.steps__num {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 880px) {
+  .auth { grid-template-columns: 1fr; gap: 32px; padding: 28px 16px 50px; }
+  .auth__aside { padding-top: 0; }
+}

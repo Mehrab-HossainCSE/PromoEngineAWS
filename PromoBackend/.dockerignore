@@ -1,0 +1,30 @@
+# Build output from host-side builds. Copying these in would poison the image
+# with binaries built against a different SDK and invalidate the layer cache on
+# every local `dotnet build`.
+**/bin/
+**/obj/
+artifacts/
+
+# Anything that could carry a credential into an image layer.
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+**/*.user
+.env
+.env.*
+**/secrets.json
+
+# Source control, tooling and editor state - none of it is needed to compile.
+.git/
+.github/
+.vs/
+.vscode/
+.idea/
+**/*.md
+**/.DS_Store
+**/Thumbs.db
+**/*.log
+
+# The frontend and deployment tree are built by their own contexts.
+../PromoFrontend/
+deploy/
+docker-compose*.yml

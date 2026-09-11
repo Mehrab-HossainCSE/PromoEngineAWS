@@ -1,0 +1,76 @@
+<div class="page">
+  <header class="plans__head">
+    <h1>Choose your subscription</h1>
+    <p class="muted">
+      Your plan decides which offer templates you can build and how much you can run.
+      Every plan includes a dedicated database for your data.
+    </p>
+
+    @if (isGuest()) {
+      <div class="alert alert--info plans__notice">
+        <div>
+          <strong>You are browsing as a guest.</strong>
+          Pick a plan and we will ask for your email, password and company details next —
+          we need them to create and name your database.
+        </div>
+      </div>
+    }
+  </header>
+
+  @if (error()) {
+    <div class="alert alert--error">{{ error() }}</div>
+  }
+
+  @if (loading()) {
+    <div class="empty"><span class="spinner spinner--lg"></span></div>
+  } @else {
+    <div class="plans">
+      @for (plan of plans(); track plan.code) {
+        <article class="plan" [class.plan--featured]="plan.isHighlighted"
+                 [class.plan--current]="plan.code === currentPlanCode()">
+          @if (plan.isHighlighted) { <div class="plan__ribbon">Most popular</div> }
+
+          <div class="plan__head">
+            <h2>{{ plan.name }}</h2>
+            <p class="small muted">{{ plan.tagline }}</p>
+          </div>
+
+          <div class="plan__price">
+            <span class="plan__amount">{{ plan.monthlyPrice | currency: plan.currencyCode : 'symbol' : '1.0-0' }}</span>
+            <span class="plan__period">/ month</span>
+          </div>
+
+          <p class="small plan__desc">{{ plan.description }}</p>
+
+          <ul class="plan__features">
+            @for (feature of plan.features; track feature) {
+              <li>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+                {{ feature }}
+              </li>
+            }
+          </ul>
+
+          <dl class="plan__limits">
+            <div><dt>Promotions</dt><dd>{{ limitLabel(plan.maxPromotions) }}</dd></div>
+            <div><dt>Offers per promotion</dt><dd>{{ plan.maxOffersPerPromotion }}</dd></div>
+            <div><dt>Users</dt><dd>{{ limitLabel(plan.maxUsers) }}</dd></div>
+          </dl>
+
+          @if (plan.code === currentPlanCode()) {
+            <button class="btn btn--block" type="button" disabled>Current plan</button>
+          } @else {
+            <button class="btn btn--block" type="button"
+                    [class.btn--primary]="plan.isHighlighted || isGuest()"
+                    [disabled]="selecting() !== null"
+                    (click)="choose(plan)">
+              @if (selecting() === plan.code) { <span class="spinner"></span> }
+              {{ isGuest() ? 'Continue with ' + plan.name : 'Select ' + plan.name }}
+            </button>
+          }
+        </article>
+      }
+    </div>
+  }
+</div>

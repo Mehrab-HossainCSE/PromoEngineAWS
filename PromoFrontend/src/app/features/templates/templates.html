@@ -1,0 +1,93 @@
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Offer templates</h1>
+      <div class="page-head__sub">
+        Thirteen templates across two offer levels. Each one decides which conditions,
+        rewards and item lists the wizard asks you for.
+      </div>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" [checked]="onlyAvailable()" (change)="onlyAvailable.set(!onlyAvailable())">
+      <span>Only show what my plan includes</span>
+    </label>
+  </div>
+
+  @if (error()) {
+    <div class="alert alert--error">{{ error() }}</div>
+  }
+
+  @if (loading()) {
+    <div class="empty"><span class="spinner spinner--lg"></span></div>
+  } @else {
+    @if (itemTemplates().length) {
+      <h2 class="tpl-heading">Item level offers</h2>
+      <div class="tpl-list">
+        @for (template of itemTemplates(); track template.code) {
+          <article class="tplcard" [class.tplcard--locked]="!template.availableOnCurrentPlan">
+            <div class="tplcard__head">
+              <div>
+                <h3>{{ template.name }}</h3>
+                <div class="small muted">{{ template.example }}</div>
+              </div>
+              @if (template.availableOnCurrentPlan) {
+                <span class="badge badge--active">Included</span>
+              } @else {
+                <span class="badge">Upgrade</span>
+              }
+            </div>
+
+            <p class="small tplcard__desc">{{ template.description }}</p>
+
+            <dl class="kv small">
+              <dt>Conditions</dt><dd>{{ conditionText(template) }}</dd>
+              <dt>Reward</dt><dd>{{ rewardText(template) }}</dd>
+            </dl>
+
+            <div class="tplcard__flags">
+              @if (template.conditionPriceRestriction) { <span class="badge">Price restriction</span> }
+              @if (template.allowsDistributionRule) { <span class="badge">Distribution rule</span> }
+              @if (template.allowsApplyDiscountUpTo) { <span class="badge">Application limit</span> }
+              @if (template.allowsApplyTo) { <span class="badge">Regular / clearance</span> }
+            </div>
+          </article>
+        }
+      </div>
+    }
+
+    @if (transactionTemplates().length) {
+      <h2 class="tpl-heading">Transaction level offers</h2>
+      <div class="tpl-list">
+        @for (template of transactionTemplates(); track template.code) {
+          <article class="tplcard" [class.tplcard--locked]="!template.availableOnCurrentPlan">
+            <div class="tplcard__head">
+              <div>
+                <h3>{{ template.name }}</h3>
+                <div class="small muted">{{ template.example }}</div>
+              </div>
+              @if (template.availableOnCurrentPlan) {
+                <span class="badge badge--active">Included</span>
+              } @else {
+                <span class="badge">Upgrade</span>
+              }
+            </div>
+
+            <p class="small tplcard__desc">{{ template.description }}</p>
+
+            <dl class="kv small">
+              <dt>Conditions</dt><dd>{{ conditionText(template) }}</dd>
+              <dt>Reward</dt><dd>{{ rewardText(template) }}</dd>
+            </dl>
+
+            <div class="tplcard__flags">
+              @if (template.conditionPriceRestriction) { <span class="badge">Price restriction</span> }
+              @if (template.rewardItemMode === 'ExcludedItems') { <span class="badge">Item exclusions</span> }
+              @if (template.allowsApplyTo) { <span class="badge">Regular / clearance</span> }
+            </div>
+          </article>
+        }
+      </div>
+    }
+  }
+</div>

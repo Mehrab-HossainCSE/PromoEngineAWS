@@ -1,0 +1,92 @@
+.plans__head {
+  max-width: 640px;
+  margin: 0 auto 32px;
+  text-align: center;
+}
+
+.plans__head h1 { margin-bottom: 8px; }
+.plans__notice { margin-top: 22px; text-align: left; }
+
+.plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(288px, 1fr));
+  gap: 20px;
+  align-items: start;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.plan {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 26px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.plan:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+
+.plan--featured {
+  border-color: var(--primary-border);
+  box-shadow: var(--shadow);
+}
+
+.plan--current { border-color: var(--success); }
+
+.plan__ribbon {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 4px 13px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.plan__head h2 { font-size: 18px; margin-bottom: 3px; }
+
+.plan__price { display: flex; align-items: baseline; gap: 6px; }
+.plan__amount { font-size: 33px; font-weight: 700; letter-spacing: -0.03em; }
+.plan__period { color: var(--text-muted); font-size: 13px; }
+
+.plan__desc { color: var(--text-secondary); }
+
+.plan__features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.plan__features li { display: flex; gap: 9px; align-items: flex-start; color: var(--text-secondary); }
+.plan__features svg { color: var(--success); flex: none; margin-top: 3px; }
+
+.plan__limits {
+  margin: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.plan__limits > div { display: flex; justify-content: space-between; gap: 12px; }
+.plan__limits dt { color: var(--text-muted); margin: 0; }
+.plan__limits dd { margin: 0; font-weight: 500; }
+
+.plan .btn { margin-top: auto; }

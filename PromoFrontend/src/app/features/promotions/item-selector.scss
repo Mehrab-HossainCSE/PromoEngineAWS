@@ -1,0 +1,151 @@
+.items {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.items__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.items__empty { padding: 20px 14px; }
+
+.items .table th { background: var(--surface); }
+
+/* ----------------------------------------------------- uploaded file chips */
+
+.items__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filechip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 4px 3px 9px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: 1px solid var(--primary-border);
+}
+
+.filechip__count {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.filechip button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 5px;
+  border-radius: 50%;
+}
+
+.filechip button:hover { background: rgba(127, 127, 127, 0.2); }
+
+/* -------------------------------------------- offer product sheet (POS data) */
+
+.products {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.products__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.products__head .card__title { display: flex; align-items: center; gap: 7px; }
+.products__head .small { margin-top: 3px; max-width: 60ch; }
+
+.products__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.products__more {
+  padding: 9px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.products .table th { background: var(--surface); }
+
+/* The include/exclude toggle sits inside a table cell, so it has to be smaller
+   than the segmented control used in a form field. */
+.segmented--sm { padding: 2px; gap: 2px; flex-wrap: nowrap; }
+.segmented--sm button { font-size: 11.5px; padding: 3px 8px; border-radius: 5px; }
+
+/* ---------------------------------------------------------------- upload */
+
+.upload { display: flex; flex-direction: column; gap: 13px; }
+
+.upload__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 28px 20px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.upload__drop:hover { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.upload__drop.is-busy { cursor: progress; }
+.upload__drop input[type='file'] { display: none; }
+.upload__drop .hint { color: inherit; opacity: 0.75; }
+
+.upload__cols { line-height: 1.6; }
+.upload__cols strong { color: var(--text-secondary); font-weight: 600; }
+
+.upload__preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.upload__preview-head {
+  padding: 8px 12px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.upload__preview .table td { padding: 8px 12px; }

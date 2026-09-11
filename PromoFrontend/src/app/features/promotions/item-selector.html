@@ -1,0 +1,477 @@
+<div class="items">
+  <div class="items__head">
+    <div>
+      <div class="card__title">{{ title() }}</div>
+      @if (hint()) { <div class="small muted">{{ hint() }}</div> }
+    </div>
+
+    <div class="row">
+      @if (showItems() && items().length) {
+        <span class="badge badge--include">{{ includeCount() }} include</span>
+        @if (excludeCount()) {
+          <span class="badge badge--exclude">{{ excludeCount() }} exclude</span>
+        }
+      }
+      @if (showItems()) {
+        <button class="btn btn--sm" type="button" (click)="open()" [disabled]="disabled()">Add items</button>
+      }
+
+      @if (showProducts()) {
+        <button class="btn btn--sm btn--primary" type="button" (click)="openProductUpload()"
+                [disabled]="disabled()">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px; vertical-align: -1px;">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5-5 5 5"/><path d="M12 5v14"/>
+          </svg>
+          Excel Upload
+        </button>
+      }
+    </div>
+  </div>
+
+  @if (!showItems()) {
+    <!-- This template's reward has no item rules of its own; the uploaded sheet below
+         is what says which products the discount reaches. -->
+  } @else if (items().length === 0) {
+    <div class="items__empty small muted">
+      <div>{{ emptyText() }}</div>
+      <div class="row" style="margin-top: 10px; gap: 8px;">
+        <button class="btn btn--sm" type="button" (click)="open()" [disabled]="disabled()">Add items</button>
+      </div>
+    </div>
+  } @else {
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:90px">Action</th>
+            <th style="width:150px">Level</th>
+            <th>Selection</th>
+            <th style="width:44px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (item of items(); track $index) {
+            <tr>
+              <td>
+                <span class="badge" [class.badge--include]="item.action === 'Include'"
+                      [class.badge--exclude]="item.action === 'Exclude'">{{ item.action }}</span>
+              </td>
+              <td class="small">{{ levelLabel(item.level) }}</td>
+              <td class="small">{{ summarise(item) }}</td>
+              <td>
+                <button class="icon-btn" type="button" (click)="remove($index)"
+                        [disabled]="disabled()" aria-label="Remove">×</button>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</div>
+
+@if (showProducts()) {
+  <!-- ========================= OFFER PRODUCTS ========================= -->
+  <div class="products">
+    <div class="products__head">
+      <div>
+        <div class="card__title">
+          Offer products
+          @if (products().length) {
+            <span class="badge badge--include">{{ productIncludeCount() }} discounted</span>
+            @if (productExcludeCount()) {
+              <span class="badge badge--exclude">{{ productExcludeCount() }} excluded</span>
+            }
+          }
+        </div>
+        <div class="small muted">
+          The products this offer covers, from <strong>Excel Upload</strong> above. A point of sale
+          sends a barcode to <span class="mono">get-applicable-promotions</span> and is told this
+          offer's discount.
+        </div>
+      </div>
+
+      <div class="row">
+        @if (products().length) {
+          <button class="btn btn--sm" type="button" (click)="setAllProductActions('Include')"
+                  [disabled]="disabled()">Include all</button>
+          <button class="btn btn--sm btn--danger" type="button" (click)="clearProducts()"
+                  [disabled]="disabled()">Clear</button>
+        }
+      </div>
+    </div>
+
+    @if (productFiles().length) {
+      <div class="products__files">
+        @for (file of productFiles(); track file.name) {
+          <span class="filechip">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/>
+            </svg>
+            {{ file.name }}
+            <span class="filechip__count">{{ file.count }}</span>
+            <button type="button" (click)="removeProductFile(file.name)" [disabled]="disabled()"
+                    aria-label="Remove these rows">×</button>
+          </span>
+        }
+      </div>
+    }
+
+    @if (products().length === 0) {
+      <div class="items__empty small muted">
+        <div>
+          No products yet. Use <strong>Excel Upload</strong> above to add the products this offer
+          discounts, and its discount becomes available to a point of sale for every one of them.
+        </div>
+        <div class="row" style="margin-top: 10px; gap: 8px;">
+          <button class="btn btn--sm btn--ghost" type="button" (click)="downloadProductTemplate()">
+            Download template
+          </button>
+        </div>
+      </div>
+    } @else {
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:170px">Discount</th>
+              <th style="width:150px">Barcode</th>
+              <th>Product</th>
+              <th style="width:80px">To POS</th>
+              <th style="width:90px">Site</th>
+              <th style="width:80px">Type</th>
+              <th style="width:80px">Tier</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (product of productPreview(); track $index) {
+              <tr [class.is-cancelled]="product.action === 'Exclude'">
+                <td>
+                  <div class="segmented segmented--sm">
+                    <button type="button" [class.is-active]="product.action !== 'Exclude'"
+                            [disabled]="disabled()"
+                            (click)="setProductAction($index, 'Include')">Include</button>
+                    <button type="button" [class.is-active]="product.action === 'Exclude'"
+                            [disabled]="disabled()"
+                            (click)="setProductAction($index, 'Exclude')">Exclude</button>
+                  </div>
+                </td>
+                <td class="mono">{{ product.barcode }}</td>
+                <td class="small">
+                  {{ product.itemDescription || '—' }}
+                  @if (product.itemId || product.styleCode) {
+                    <div class="muted">
+                      @if (product.itemId) { Item {{ product.itemId }} }
+                      @if (product.itemId && product.styleCode) { · }
+                      @if (product.styleCode) { Style {{ product.styleCode }} }
+                    </div>
+                  }
+                </td>
+                <td>
+                  <span class="badge" [class.badge--include]="product.getApplicablePromotions"
+                        [class.badge--exclude]="!product.getApplicablePromotions">
+                    {{ product.getApplicablePromotions ? 'Yes' : 'No' }}
+                  </span>
+                </td>
+                <td class="small">{{ product.siteCode || 'All' }}</td>
+                <td class="small">{{ product.promoTypeId || 'Any' }}</td>
+                <td class="small">{{ product.customerTier || 'Any' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      @if (products().length > productPreview().length) {
+        <div class="products__more small muted">
+          Showing the first {{ productPreview().length }} of {{ products().length }} row(s).
+          All of them are saved with the offer.
+        </div>
+      }
+    }
+  </div>
+}
+
+@if (dialogOpen()) {
+  <div class="modal-backdrop" (click)="close()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <div class="modal__head">
+        <h2>Include / exclude items</h2>
+        <button class="icon-btn" type="button" (click)="close()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal__body">
+        @if (error()) {
+          <div class="alert alert--error">{{ error() }}</div>
+        }
+
+        <div class="field">
+          <span class="label">Action</span>
+          <div class="segmented">
+            <button type="button" [class.is-active]="draft().action === 'Include'"
+                    (click)="setAction('Include')">Include</button>
+            <button type="button" [class.is-active]="draft().action === 'Exclude'"
+                    (click)="setAction('Exclude')">Exclude</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="is-level">Item level <span class="label__req">*</span></label>
+          <select id="is-level" class="select" [ngModel]="draft().level"
+                  (ngModelChange)="setLevel($event)" name="level">
+            @for (option of levels; track option.value) {
+              <option [value]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="grid grid--2">
+          @if (showDepartment()) {
+            <div class="field">
+              <label class="label" for="is-dept">Department <span class="label__req">*</span></label>
+              <input id="is-dept" class="input" [ngModel]="draft().department" name="department"
+                     (ngModelChange)="patch('department', $event)" placeholder="3100">
+            </div>
+          }
+
+          @if (showClass()) {
+            <div class="field">
+              <label class="label" for="is-class">Class <span class="label__req">*</span></label>
+              <input id="is-class" class="input" [ngModel]="draft().class" name="class"
+                     (ngModelChange)="patch('class', $event)" placeholder="12">
+            </div>
+          }
+
+          @if (showSubclass()) {
+            <div class="field">
+              <label class="label" for="is-subclass">Subclass <span class="label__req">*</span></label>
+              <input id="is-subclass" class="input" [ngModel]="draft().subclass" name="subclass"
+                     (ngModelChange)="patch('subclass', $event)" placeholder="4">
+            </div>
+          }
+
+          @if (showItem()) {
+            <div class="field">
+              <label class="label" for="is-item">Item <span class="label__req">*</span></label>
+              <input id="is-item" class="input" [ngModel]="draft().itemId" name="itemId"
+                     (ngModelChange)="patch('itemId', $event)" placeholder="100200300">
+            </div>
+            <div class="field">
+              <label class="label" for="is-itemdesc">Item description</label>
+              <input id="is-itemdesc" class="input" [ngModel]="draft().itemDescription" name="itemDescription"
+                     (ngModelChange)="patch('itemDescription', $event)" placeholder="Collector edition chess">
+            </div>
+            <div class="field">
+              <label class="label" for="is-barcode">Barcode</label>
+              <input id="is-barcode" class="input" [ngModel]="draft().barcode" name="barcode"
+                     (ngModelChange)="patch('barcode', $event)" placeholder="0123456789012">
+              <span class="hint">UPC or EAN scanned at the till.</span>
+            </div>
+          }
+
+          @if (showParentDiff()) {
+            <div class="field">
+              <label class="label" for="is-parent">Parent item <span class="label__req">*</span></label>
+              <input id="is-parent" class="input" [ngModel]="draft().parentItemId" name="parentItemId"
+                     (ngModelChange)="patch('parentItemId', $event)" placeholder="900100">
+            </div>
+            <div class="field">
+              <label class="label" for="is-difftype">Diff type <span class="label__req">*</span></label>
+              <input id="is-difftype" class="input" [ngModel]="draft().diffType" name="diffType"
+                     (ngModelChange)="patch('diffType', $event)" placeholder="COLOUR">
+            </div>
+            <div class="field">
+              <label class="label" for="is-diff">Diff <span class="label__req">*</span></label>
+              <input id="is-diff" class="input" [ngModel]="draft().diffValue" name="diffValue"
+                     (ngModelChange)="patch('diffValue', $event)" placeholder="NAVY">
+            </div>
+          }
+
+          @if (showItemList()) {
+            <div class="field">
+              <label class="label" for="is-list">Item list <span class="label__req">*</span></label>
+              <input id="is-list" class="input" [ngModel]="draft().itemListId" name="itemListId"
+                     (ngModelChange)="patch('itemListId', $event)" placeholder="SUMMER_TOYS">
+            </div>
+          }
+
+          @if (showSupplierBrand()) {
+            <div class="field">
+              <label class="label" for="is-supplier">Supplier site</label>
+              <input id="is-supplier" class="input" [ngModel]="draft().supplierSite" name="supplierSite"
+                     (ngModelChange)="patch('supplierSite', $event)" placeholder="7700123">
+            </div>
+            <div class="field">
+              <label class="label" for="is-brand">Brand</label>
+              <input id="is-brand" class="input" [ngModel]="draft().brand" name="brand"
+                     (ngModelChange)="patch('brand', $event)" placeholder="Northwind">
+            </div>
+          }
+        </div>
+
+        @if (level() === 'AllDepartments') {
+          <p class="small muted">Every department is in scope. Add exclude rules to carve items out.</p>
+        }
+
+      </div>
+
+      <div class="modal__foot">
+        <button class="btn" type="button" (click)="close()">Cancel</button>
+        <button class="btn" type="button" (click)="add(true)">OK and add another</button>
+        <button class="btn btn--primary" type="button" (click)="add(false)">OK</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- ===================== UPLOAD OFFER PRODUCT SHEET ====================== -->
+@if (productDialogOpen()) {
+  <div class="modal-backdrop" (click)="closeProductUpload()">
+    <div class="modal modal--wide" (click)="$event.stopPropagation()">
+      <div class="modal__head">
+        <div>
+          <h2>Excel Upload</h2>
+          <div class="small muted">
+            The products this offer discounts. The sheet carries no prices — this offer's own
+            reward is the discount for every row on it.
+          </div>
+        </div>
+        <button class="icon-btn" type="button" (click)="closeProductUpload()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal__body">
+        <div class="upload">
+          @if (products().length) {
+            <div class="field">
+              <span class="label">This offer already has {{ products().length }} row(s)</span>
+              <div class="segmented">
+                <button type="button" [class.is-active]="productMode() === 'append'"
+                        (click)="productMode.set('append')">Add to them</button>
+                <button type="button" [class.is-active]="productMode() === 'replace'"
+                        (click)="productMode.set('replace')">Replace them</button>
+              </div>
+              <span class="hint">
+                {{ productMode() === 'replace'
+                    ? 'Every existing row is dropped and only this sheet is kept.'
+                    : 'Rows from other files are kept. Re-uploading the same file replaces its own rows.' }}
+              </span>
+            </div>
+          }
+
+          <label class="upload__drop" [class.is-busy]="productUploading()">
+            <input type="file" accept=".xlsx,.xlsm,.csv" (change)="onProductFileChosen($event)"
+                   [disabled]="productUploading()">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5-5 5 5"/><path d="M12 5v14"/>
+            </svg>
+            <strong>{{ productUploading() ? 'Reading the file…' : 'Choose a spreadsheet' }}</strong>
+            <span class="hint">.xlsx, .xlsm or .csv</span>
+          </label>
+
+          <p class="small muted upload__cols">
+            Recognised columns: <strong>Barcode</strong> (or UPC / EAN / GTIN — the only one required),
+            <strong>GetApplicablePromotions</strong>, <strong>Action</strong> (Include / Exclude),
+            <strong>ItemId</strong>, <strong>StyleCode</strong>, <strong>ItemDescription</strong>,
+            Department, Class, Subclass, Brand, VendorName, SupplierSite,
+            <strong>PromoTypeId</strong>, <strong>SiteCode</strong> and <strong>CustomerTier</strong>.
+            A row with no Action is a discounted product; a row with no GetApplicablePromotions is served.
+            <button class="btn btn--sm btn--ghost" type="button" (click)="downloadProductTemplate()"
+                    style="margin-left:6px">Download template</button>
+          </p>
+
+          @if (productError()) {
+            <div class="alert alert--error">{{ productError() }}</div>
+          }
+
+          @if (productUpload(); as result) {
+            <div class="alert alert--success">
+              <div>
+                Read <strong>{{ result.rowCount }}</strong> row(s) from <strong>{{ result.fileName }}</strong>,
+                <strong>{{ result.applicableRowCount }}</strong> of which a point of sale will be answered from.
+                <div class="small">Columns matched: {{ result.recognisedColumns.join(', ') }}</div>
+              </div>
+            </div>
+
+            @if (!result.hasGetApplicablePromotionsColumn) {
+              <div class="alert alert--warning">
+                <div>
+                  The sheet has no <strong>GetApplicablePromotions</strong> column, so every row is treated
+                  as available to the point of sale. Add the column to expose only part of the sheet.
+                </div>
+              </div>
+            }
+
+            @if (!result.hasActionColumn) {
+              <div class="alert alert--info">
+                <div>
+                  No <strong>Action</strong> column, so every row is included — an uploaded product is a
+                  discounted product. Switch individual rows to Exclude below, or add the column to the sheet.
+                </div>
+              </div>
+            }
+
+            @if (result.warnings.length) {
+              <div class="alert alert--warning">
+                <div>
+                  {{ result.warnings.length }} row(s) need attention:
+                  <ul>
+                    @for (warning of result.warnings.slice(0, 6); track warning) { <li>{{ warning }}</li> }
+                    @if (result.warnings.length > 6) {
+                      <li>… and {{ result.warnings.length - 6 }} more.</li>
+                    }
+                  </ul>
+                </div>
+              </div>
+            }
+
+            <div class="upload__preview">
+              <div class="upload__preview-head small muted">
+                Preview — first {{ result.rows.length > 8 ? 8 : result.rows.length }} of {{ result.rowCount }}
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th style="width:46px">Row</th>
+                      <th>Barcode</th>
+                      <th>Description</th>
+                      <th style="width:80px">Action</th>
+                      <th style="width:70px">To POS</th>
+                      <th style="width:80px">Site</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (row of result.rows.slice(0, 8); track row.rowNumber) {
+                      <tr>
+                        <td class="mono muted">{{ row.rowNumber }}</td>
+                        <td class="mono">{{ row.barcode }}</td>
+                        <td class="small">{{ row.itemDescription || '—' }}</td>
+                        <td>
+                          <span class="badge" [class.badge--include]="row.action !== 'Exclude'"
+                                [class.badge--exclude]="row.action === 'Exclude'">{{ row.action }}</span>
+                        </td>
+                        <td class="small">{{ row.getApplicablePromotions ? 'Yes' : 'No' }}</td>
+                        <td class="small">{{ row.siteCode || 'All' }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+
+      <div class="modal__foot">
+        <button class="btn" type="button" (click)="closeProductUpload()">Cancel</button>
+        <button class="btn btn--primary" type="button" (click)="addParsedProducts()"
+                [disabled]="!productUpload() || productUpload()!.rowCount === 0">
+          Add {{ productUpload()?.rowCount || 0 }} product(s)
+        </button>
+      </div>
+    </div>
+  </div>
+}

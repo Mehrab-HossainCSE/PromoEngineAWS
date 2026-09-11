@@ -1,0 +1,65 @@
+<div class="ws">
+  <div class="card ws__card">
+    <div class="card__body">
+      @if (status()?.isReady) {
+        <div class="ws__icon ws__icon--ok">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.4"
+               stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+        </div>
+        <h1>Your workspace is ready</h1>
+        <p class="muted">Taking you to promotions…</p>
+      } @else if (status()?.status === 'Failed' || error()) {
+        <div class="ws__icon ws__icon--bad">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <h1>We could not create your database</h1>
+        <p class="muted ws__error">{{ error() || status()?.error }}</p>
+      } @else {
+        <div class="ws__icon"><span class="spinner spinner--lg"></span></div>
+        <h1>Setting up your workspace</h1>
+        <p class="muted">
+          We are creating an isolated database for
+          <strong>{{ status()?.databaseName || 'your tenant' }}</strong>. This usually takes a few seconds.
+        </p>
+      }
+
+      <ol class="ws__stages">
+        @for (stage of stages; track stage.key) {
+          <li [class]="'is-' + stageState(stage.key)">
+            <span class="ws__dot"></span>
+            <div>
+              <div class="strong">{{ stage.label }}</div>
+              <div class="small muted">{{ stage.detail }}</div>
+            </div>
+          </li>
+        }
+      </ol>
+
+      @if (status(); as s) {
+        <dl class="kv ws__meta">
+          <dt>Status</dt><dd><span class="badge">{{ s.status }}</span></dd>
+          @if (s.subscription) {
+            <dt>Plan</dt><dd>{{ s.subscription.planName }} ({{ s.subscription.status }})</dd>
+          }
+          @if (s.provisioner) {
+            <dt>Provisioned by</dt><dd>{{ s.provisioner === 'Aws' ? 'AWS RDS' : 'Local SQL Server' }}</dd>
+          }
+          @if (s.databaseName) {
+            <dt>Database</dt><dd class="mono">{{ s.databaseName }}</dd>
+          }
+        </dl>
+      }
+
+      @if (status()?.status === 'Failed' || error()) {
+        <div class="row row--end ws__actions">
+          <a class="btn" routerLink="/plans">Change plan</a>
+          <button class="btn btn--primary" type="button" (click)="retry()" [disabled]="retrying()">
+            @if (retrying()) { <span class="spinner"></span> }
+            Try again
+          </button>
+        </div>
+      }
+    </div>
+  </div>
+</div>

@@ -1,0 +1,21 @@
+# node_modules is reinstalled inside the image from the lockfile. Copying the
+# host copy in is slow and can carry platform-specific native binaries.
+node_modules/
+dist/
+.angular/
+out-tsc/
+coverage/
+
+# Secrets and local overrides.
+.env
+.env.*
+
+# Source control, tooling and editor state.
+.git/
+.github/
+.vscode/
+.idea/
+**/*.md
+**/.DS_Store
+**/Thumbs.db
+**/*.log

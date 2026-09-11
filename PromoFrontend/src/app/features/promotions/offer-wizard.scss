@@ -1,0 +1,166 @@
+.wizard { max-width: 880px; }
+
+.wizard__body { max-height: min(66vh, 680px); overflow-y: auto; }
+
+.wizard__train {
+  display: flex;
+  gap: 6px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  flex-wrap: wrap;
+}
+
+.train__stop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 999px;
+  padding: 5px 14px 5px 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.train__stop:hover { color: var(--text); }
+
+.train__num {
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.train__stop.is-current { background: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-sm); }
+.train__stop.is-current .train__num { background: var(--primary); color: #fff; }
+.train__stop.is-done .train__num { background: var(--success); color: #fff; }
+
+.wizard__intro { margin-bottom: 16px; }
+.wizard__tpl-note { margin: -6px 0 16px; }
+
+/* ---------------------------------------------------------- template grid */
+
+.tpl-group-label {
+  margin: 12px 0 7px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
+}
+
+.tpl {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.tpl:hover:not(:disabled) { border-color: var(--primary-border); background: var(--surface-hover); }
+.tpl:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.tpl.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+.tpl__name { font-size: 13px; font-weight: 600; color: var(--text); }
+.tpl__example { font-size: 11.5px; color: var(--text-muted); }
+
+/* ------------------------------------------------------------- conditions */
+
+.cond {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.cond__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.cond__title { font-size: 13px; font-weight: 600; }
+
+.cond__body { padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+
+.price-rest {
+  padding: 12px 13px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.price-rest .hint { display: block; margin-top: 8px; }
+
+/* ---------------------------------------------------------------- rewards */
+
+.reward__value { max-width: 130px; }
+.reward__ccy { max-width: 160px; margin-top: 9px; }
+
+.wizard__flags {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.wizard__flags .check span { display: flex; flex-direction: column; gap: 1px; }
+.wizard__flags .hint { display: block; }
+
+/* ------------------------------------------------ validation problems */
+
+/* Layout and colour come from the shared `.alert ul` rule; only the field name
+   and the jump pill are particular to this list. */
+.problems strong { font-weight: 600; }
+
+/* Takes the reader straight to the stop holding the field being complained about.
+   A soft filled pill rather than an outlined one: at 10.5px a full strength border
+   is the heaviest thing in the alert, which is the wrong thing to draw the eye. */
+.problems__jump {
+  border: none;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  margin-right: 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.problems__jump:hover { background: color-mix(in srgb, currentColor 26%, transparent); }

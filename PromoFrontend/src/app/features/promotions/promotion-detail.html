@@ -1,0 +1,483 @@
+<div class="page">
+  @if (loading()) {
+    <div class="empty"><span class="spinner spinner--lg"></span></div>
+  } @else if (error()) {
+    <div class="alert alert--error">{{ error() }}</div>
+    <a class="btn" routerLink="/promotions">Back to promotions</a>
+  } @else if (promotion(); as promo) {
+    <div class="page-head">
+      <div>
+        <div class="crumbs small">
+          <a routerLink="/promotions">Promotions</a>
+          <span class="muted">/</span>
+          <span class="muted">#{{ promo.promotionNumber }}</span>
+        </div>
+        <h1>{{ promo.description }}</h1>
+        <div class="page-head__sub">
+          <span [class]="badgeClass(promo.status)">{{ promo.status }}</span>
+          <span>· {{ promo.offers.length }} offer(s)</span>
+          @if (promo.campaignCode) { <span>· Campaign {{ promo.campaignCode }}</span> }
+        </div>
+      </div>
+
+      <div class="row row--wrap">
+        <button class="btn btn--danger" type="button" (click)="deletePromotion()" [disabled]="busy()">
+          Delete promotion
+        </button>
+        <button class="btn btn--primary" type="button" (click)="addOffer()">Add offer</button>
+      </div>
+    </div>
+
+    <!-- ================================ OFFERS ================================ -->
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">
+          Offers
+          @if (checkedOffers().length) {
+            <span class="badge">{{ checkedOffers().length }} selected</span>
+          }
+        </div>
+
+        <div class="row row--wrap">
+          <button class="btn btn--sm" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="submitSelected()">Submit</button>
+          <button class="btn btn--sm" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="approveSelected()">Approve</button>
+          <button class="btn btn--sm" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="reopenSelected()">Reopen</button>
+          <button class="btn btn--sm" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="openDialog('massUpdate')">Mass update</button>
+          <button class="btn btn--sm" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="openDialog('cancelOffer')">Cancel</button>
+          <button class="btn btn--sm btn--danger" type="button" [disabled]="!checkedOffers().length || busy()"
+                  (click)="deleteSelected()">Delete</button>
+        </div>
+      </div>
+
+      @if (promo.offers.length === 0) {
+        <div class="empty">
+          <div class="empty__title">No offers on this promotion</div>
+          <p class="small">An offer defines the reward and the conditions to receive it.</p>
+          <button class="btn btn--primary" type="button" (click)="addOffer()" style="margin-top:14px">
+            Add the first offer
+          </button>
+        </div>
+      } @else {
+        <div class="table-wrap">
+          <table class="table table--clickable">
+            <thead>
+              <tr>
+                <th style="width:40px"></th>
+                <th style="width:52px">#</th>
+                <th>Description</th>
+                <th style="width:190px">Template</th>
+                <th style="width:170px">Conditions</th>
+                <th style="width:150px">Reward</th>
+                <th style="width:120px">Starts</th>
+                <th style="width:106px">Status</th>
+                <th style="width:70px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (offer of promo.offers; track offer.id) {
+                <tr [class.is-selected]="offer.id === selectedOfferId()"
+                    [class.is-cancelled]="offer.status === 'Cancelled'"
+                    (click)="select(offer)">
+                  <td (click)="$event.stopPropagation()">
+                    <input type="checkbox" [checked]="isChecked(offer)" (change)="toggleChecked(offer, $event)">
+                  </td>
+                  <td class="mono">{{ offer.offerNumber }}</td>
+                  <td>
+                    <div class="strong">{{ offer.description }}</div>
+                    <div class="row small muted offer__flags">
+                      @if (offer.couponCode) { <span class="badge">{{ offer.couponCode }}</span> }
+                      @if (offer.exclusiveDiscount) { <span class="badge">Exclusive</span> }
+                      @if (offer.isEmergency) { <span class="badge badge--warning">Emergency</span> }
+                    </div>
+                  </td>
+                  <td class="small">
+                    {{ offer.templateName }}
+                    <div class="muted">{{ offer.level }} level</div>
+                  </td>
+                  <td class="small">{{ conditionSummary(offer) }}</td>
+                  <td class="small strong">{{ rewardSummary(offer) }}</td>
+                  <td class="small">{{ offer.startDate | date: 'mediumDate' }}</td>
+                  <td><span [class]="badgeClass(offer.status)">{{ offer.status }}</span></td>
+                  <td (click)="$event.stopPropagation()">
+                    <button class="btn btn--sm btn--ghost" type="button" (click)="editOffer(offer)">Edit</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </div>
+
+    <!-- ========================= SELECTED OFFER DETAIL ======================== -->
+    @if (selectedOffer(); as offer) {
+      <div class="detail-grid">
+        <div class="card">
+          <div class="card__head">
+            <div class="card__title">Offer {{ offer.offerNumber }} detail</div>
+            <div class="row">
+              <button class="btn btn--sm" type="button" (click)="openDialog('cloneOffer')">Create from existing</button>
+              <button class="btn btn--sm" type="button" (click)="editOffer(offer)">Edit</button>
+            </div>
+          </div>
+
+          <div class="card__body">
+            <dl class="kv">
+              <dt>Template</dt><dd>{{ offer.templateName }}</dd>
+              <dt>Level / type</dt><dd>{{ offer.level }} · {{ offer.type }}</dd>
+              <dt>Dates</dt>
+              <dd>
+                {{ offer.startDate | date: 'mediumDate' }}
+                @if (offer.endDate) { → {{ offer.endDate | date: 'mediumDate' }} } @else { → open ended }
+              </dd>
+              @if (offer.distributionRule !== 'NotApplicable') {
+                <dt>Distribution</dt><dd>{{ offer.distributionRule }}</dd>
+              }
+              @if (offer.couponCode) {
+                <dt>Coupon</dt>
+                <dd>{{ offer.couponCode }} @if (offer.couponCodeRequired) { <span class="muted">(required)</span> }</dd>
+              }
+              @if (offer.customerDescription) {
+                <dt>Customer text</dt><dd>{{ offer.customerDescription }}</dd>
+              }
+              @if (offer.approvedBy) {
+                <dt>Approved by</dt><dd>{{ offer.approvedBy }}</dd>
+              }
+              @if (offer.cancelReason) {
+                <dt>Cancel reason</dt><dd>{{ offer.cancelReason }}</dd>
+              }
+            </dl>
+
+            @for (condition of offer.conditions; track condition.id) {
+              <div class="divider"></div>
+              <h3>Condition {{ condition.sequence }}</h3>
+              <dl class="kv">
+                @if (condition.buyQuantity != null) {
+                  <dt>Buy quantity</dt><dd>{{ condition.buyQuantity }} {{ condition.unitOfMeasure }}</dd>
+                }
+                @if (condition.spendAmount != null) {
+                  <dt>Spend</dt><dd>{{ condition.spendAmount }} {{ condition.currencyCode || '(store currency)' }}</dd>
+                }
+                @if (condition.priceRestriction !== 'None') {
+                  <dt>Price restriction</dt>
+                  <dd>
+                    {{ condition.priceRestriction }} {{ condition.priceRestrictionFrom }}
+                    @if (condition.priceRestrictionTo != null) { – {{ condition.priceRestrictionTo }} }
+                  </dd>
+                }
+              </dl>
+
+              @if (condition.items.length) {
+                <div class="chips">
+                  @for (item of condition.items; track item.id) {
+                    <span class="chip" [class.chip--exclude]="item.action === 'Exclude'">
+                      <span class="chip__action">{{ item.action }}</span>{{ item.summary }}
+                    </span>
+                  }
+                </div>
+              }
+            }
+
+            @if (offer.reward; as reward) {
+              <div class="divider"></div>
+              <h3>Reward</h3>
+              <dl class="kv">
+                <dt>Discount</dt><dd class="strong">{{ rewardSummary(offer) }}</dd>
+                @if (offer.templateCode !== 'BUY_X_GET_GIFT_WITH_PURCHASE'
+                     && offer.templateCode !== 'SPEND_X_GET_GIFT_WITH_PURCHASE') {
+                  <dt>Apply to</dt><dd>{{ reward.applyTo }}</dd>
+                }
+                <dt>Apply up to</dt><dd>{{ reward.applyDiscountUpTo ?? 'Unlimited' }}</dd>
+                @if (reward.giftItemDescription) {
+                  <dt>Gift</dt><dd>{{ reward.giftItemDescription }}</dd>
+                }
+                @if (reward.singleItemId) {
+                  <dt>Item</dt><dd>{{ reward.singleItemId }} {{ reward.singleItemDescription }}</dd>
+                }
+              </dl>
+
+              @if (offer.rewardItems.length) {
+                <div class="chips">
+                  @for (item of offer.rewardItems; track item.id) {
+                    <span class="chip" [class.chip--exclude]="item.action === 'Exclude'">
+                      <span class="chip__action">{{ item.action }}</span>{{ item.summary }}
+                    </span>
+                  }
+                </div>
+              }
+            }
+          </div>
+        </div>
+
+        <!-- ============================== LOCATIONS ============================== -->
+        <div class="card">
+          <div class="card__head">
+            <div class="card__title">Locations</div>
+            <div class="row">
+              @if (otherOffers().length) {
+                <button class="btn btn--sm" type="button" (click)="openDialog('copyLocations')"
+                        [disabled]="!offer.locations.length">Copy to offers</button>
+              }
+              <button class="btn btn--sm btn--primary" type="button" (click)="openDialog('location')">Add</button>
+            </div>
+          </div>
+
+          @if (offer.locations.length === 0) {
+            <div class="empty">
+              <div class="empty__title">No locations</div>
+              <p class="small">Add zones, location lists or stores where this offer runs.</p>
+            </div>
+          } @else {
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width:90px">Action</th>
+                    <th style="width:110px">Level</th>
+                    <th>Location</th>
+                    <th style="width:44px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (location of offer.locations; track location.id) {
+                    <tr [class.is-cancelled]="location.cancelledAtUtc">
+                      <td>
+                        <span class="badge" [class.badge--include]="location.action === 'Include'"
+                              [class.badge--exclude]="location.action === 'Exclude'">{{ location.action }}</span>
+                      </td>
+                      <td class="small">{{ location.level }}</td>
+                      <td class="small">{{ location.summary }}</td>
+                      <td>
+                        <button class="icon-btn" type="button" (click)="deleteLocation(location.id)"
+                                [disabled]="busy()" aria-label="Remove">×</button>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+      </div>
+    }
+  }
+</div>
+
+<!-- ================================ WIZARD ================================ -->
+@if (wizardOpen() && promotion(); as promo) {
+  <app-offer-wizard
+    [promotionId]="promo.id"
+    [templates]="templates()"
+    [existing]="editingOffer()"
+    (saved)="onWizardSaved()"
+    (cancelled)="wizardOpen.set(false)" />
+}
+
+<!-- ================================ DIALOGS =============================== -->
+@if (dialog() !== 'none') {
+  <div class="modal-backdrop" (click)="closeDialog()">
+    <div class="modal" (click)="$event.stopPropagation()">
+
+      @if (dialog() === 'location') {
+        <div class="modal__head">
+          <h2>Include locations</h2>
+          <button class="icon-btn" type="button" (click)="closeDialog()" aria-label="Close">×</button>
+        </div>
+        <div class="modal__body">
+          @if (dialogError()) { <div class="alert alert--error">{{ dialogError() }}</div> }
+
+          <div class="field">
+            <label class="label" for="loc-level">Level <span class="label__req">*</span></label>
+            <select id="loc-level" class="select" [ngModel]="locationLevel()" name="locLevel"
+                    (ngModelChange)="locationLevel.set($event)">
+              <option value="Zone">Zone</option>
+              <option value="LocationList">Location list</option>
+              <option value="Store">Store</option>
+            </select>
+          </div>
+
+          @if (locationLevel() === 'Zone') {
+            <div class="grid grid--2">
+              <div class="field">
+                <label class="label" for="loc-zg">Zone group</label>
+                <input id="loc-zg" class="input" [ngModel]="zoneGroup()" name="zoneGroup"
+                       (ngModelChange)="zoneGroup.set($event)" placeholder="1">
+              </div>
+              <div class="field">
+                <label class="label" for="loc-z">Zone <span class="label__req">*</span></label>
+                <input id="loc-z" class="input" [ngModel]="zone()" name="zone"
+                       (ngModelChange)="zone.set($event)" placeholder="North">
+              </div>
+            </div>
+          } @else if (locationLevel() === 'LocationList') {
+            <div class="field">
+              <label class="label" for="loc-list">Location list <span class="label__req">*</span></label>
+              <input id="loc-list" class="input" [ngModel]="locationList()" name="locationList"
+                     (ngModelChange)="locationList.set($event)" placeholder="FLAGSHIP_STORES">
+            </div>
+          } @else {
+            <div class="grid grid--2">
+              <div class="field">
+                <label class="label" for="loc-store">Store <span class="label__req">*</span></label>
+                <input id="loc-store" class="input" [ngModel]="store()" name="store"
+                       (ngModelChange)="store.set($event)" placeholder="1001">
+              </div>
+              <div class="field">
+                <label class="label" for="loc-storename">Store name</label>
+                <input id="loc-storename" class="input" [ngModel]="storeName()" name="storeName"
+                       (ngModelChange)="storeName.set($event)" placeholder="Boston Downtown">
+              </div>
+            </div>
+          }
+        </div>
+        <div class="modal__foot">
+          <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+          <button class="btn btn--primary" type="button" (click)="addLocation()" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> } Add location
+          </button>
+        </div>
+      }
+
+      @if (dialog() === 'copyLocations') {
+        <div class="modal__head">
+          <h2>Copy locations to offers</h2>
+          <button class="icon-btn" type="button" (click)="closeDialog()" aria-label="Close">×</button>
+        </div>
+        <div class="modal__body">
+          @if (dialogError()) { <div class="alert alert--error">{{ dialogError() }}</div> }
+          <p class="small muted">
+            Copies every location on offer {{ selectedOffer()?.offerNumber }} onto the offers you pick.
+          </p>
+          <div class="picklist">
+            @for (offer of otherOffers(); track offer.id) {
+              <label class="check picklist__row">
+                <input type="checkbox" [checked]="copyTargets().has(offer.id)"
+                       (change)="toggleCopyTarget(offer.id)">
+                <span>
+                  <span class="strong">#{{ offer.offerNumber }} {{ offer.description }}</span>
+                  <span class="hint">{{ offer.templateName }} · {{ offer.locations.length }} location(s)</span>
+                </span>
+              </label>
+            }
+          </div>
+        </div>
+        <div class="modal__foot">
+          <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+          <button class="btn btn--primary" type="button" (click)="copyLocations()" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> } Copy
+          </button>
+        </div>
+      }
+
+      @if (dialog() === 'cloneOffer') {
+        <div class="modal__head">
+          <h2>Create offer from existing</h2>
+          <button class="icon-btn" type="button" (click)="closeDialog()" aria-label="Close">×</button>
+        </div>
+        <div class="modal__body">
+          @if (dialogError()) { <div class="alert alert--error">{{ dialogError() }}</div> }
+          <p class="small muted">
+            Copies the conditions, rewards and items of offer {{ selectedOffer()?.offerNumber }}.
+            Use it to build tiers such as buy 2 get 10% off, buy 3 get 20% off.
+          </p>
+
+          <div class="field">
+            <label class="label" for="cl-desc">Offer description <span class="label__req">*</span></label>
+            <input id="cl-desc" class="input" [ngModel]="cloneDescription()" name="cloneDesc"
+                   (ngModelChange)="cloneDescription.set($event)">
+          </div>
+
+          <div class="field">
+            <label class="label" for="cl-start">Start date <span class="label__req">*</span></label>
+            <input id="cl-start" class="input" type="date" [ngModel]="cloneStartDate()" name="cloneStart"
+                   (ngModelChange)="cloneStartDate.set($event)">
+          </div>
+
+          <label class="check">
+            <input type="checkbox" [ngModel]="cloneCopyLocations()" name="cloneLocs"
+                   (ngModelChange)="cloneCopyLocations.set($event)">
+            <span>Copy the locations too</span>
+          </label>
+        </div>
+        <div class="modal__foot">
+          <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+          <button class="btn btn--primary" type="button" (click)="cloneOffer()" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> } Create
+          </button>
+        </div>
+      }
+
+      @if (dialog() === 'cancelOffer') {
+        <div class="modal__head">
+          <h2>Cancel offers</h2>
+          <button class="icon-btn" type="button" (click)="closeDialog()" aria-label="Close">×</button>
+        </div>
+        <div class="modal__body">
+          @if (dialogError()) { <div class="alert alert--error">{{ dialogError() }}</div> }
+          <p class="small muted">Only active offers can be cancelled. A reason is required.</p>
+          <div class="field">
+            <label class="label" for="cx-reason">Reason <span class="label__req">*</span></label>
+            <textarea id="cx-reason" class="textarea" [ngModel]="cancelReason()" name="cancelReason"
+                      (ngModelChange)="cancelReason.set($event)"
+                      placeholder="Supplier withdrew the deal"></textarea>
+          </div>
+        </div>
+        <div class="modal__foot">
+          <button class="btn" type="button" (click)="closeDialog()">Back</button>
+          <button class="btn btn--danger" type="button" (click)="cancelOffers()" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> } Cancel offers
+          </button>
+        </div>
+      }
+
+      @if (dialog() === 'massUpdate') {
+        <div class="modal__head">
+          <h2>Mass update offers</h2>
+          <button class="icon-btn" type="button" (click)="closeDialog()" aria-label="Close">×</button>
+        </div>
+        <div class="modal__body">
+          @if (dialogError()) { <div class="alert alert--error">{{ dialogError() }}</div> }
+          <p class="small muted">Applies to the {{ checkedOffers().length }} selected offer(s).</p>
+
+          <div class="field">
+            <label class="label" for="mu-end">End date</label>
+            <input id="mu-end" class="input" type="date" [ngModel]="massEndDate()" name="massEnd"
+                   (ngModelChange)="massEndDate.set($event)" [disabled]="massClearEndDate()">
+          </div>
+
+          <div class="field">
+            <label class="label" for="mu-coupon">Coupon code</label>
+            <input id="mu-coupon" class="input" [ngModel]="massCoupon()" name="massCoupon"
+                   (ngModelChange)="massCoupon.set($event)" [disabled]="massClearCoupon()">
+          </div>
+
+          <div class="divider"></div>
+
+          <label class="check">
+            <input type="checkbox" [ngModel]="massClearEndDate()" name="massClearEnd"
+                   (ngModelChange)="massClearEndDate.set($event)">
+            <span>Clear end date on all selected offers</span>
+          </label>
+
+          <label class="check" style="margin-top:10px">
+            <input type="checkbox" [ngModel]="massClearCoupon()" name="massClearCoupon"
+                   (ngModelChange)="massClearCoupon.set($event)">
+            <span>Clear coupon code on all selected offers</span>
+          </label>
+        </div>
+        <div class="modal__foot">
+          <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+          <button class="btn btn--primary" type="button" (click)="massUpdate()" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> } Apply
+          </button>
+        </div>
+      }
+
+    </div>
+  </div>
+}

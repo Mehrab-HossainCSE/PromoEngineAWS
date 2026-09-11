@@ -1,0 +1,107 @@
+<div class="onboard">
+  <div class="card onboard__card">
+    <div class="card__head">
+      <div>
+        <div class="card__title">Tell us who you are</div>
+        <div class="small muted">We need these details before we can create your database.</div>
+      </div>
+      @if (plan(); as p) {
+        <span class="badge badge--approved">{{ p.name }} plan</span>
+      }
+    </div>
+
+    <div class="card__body">
+      @if (error()) {
+        <div class="alert alert--error">{{ error() }}</div>
+      }
+
+      <form [formGroup]="form" (ngSubmit)="submit()">
+        <div class="grid grid--2">
+          <div class="field">
+            <label class="label" for="ob-email">Work email <span class="label__req">*</span></label>
+            <input id="ob-email" class="input" type="email" formControlName="email" placeholder="you@company.com">
+            @if (form.controls.email.touched && form.controls.email.invalid) {
+              <span class="error-text">Enter a valid email address.</span>
+            }
+            <span class="hint">Your tenant database is named from this address.</span>
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-password">Password <span class="label__req">*</span></label>
+            <input id="ob-password" class="input" type="password" formControlName="password"
+                   autocomplete="new-password" placeholder="At least 8 characters">
+            @if (form.controls.password.touched && form.controls.password.invalid) {
+              <span class="error-text">Use at least 8 characters.</span>
+            }
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-company">Company <span class="label__req">*</span></label>
+            <input id="ob-company" class="input" formControlName="companyName" placeholder="Northwind Retail">
+            @if (form.controls.companyName.touched && form.controls.companyName.invalid) {
+              <span class="error-text">Company is required.</span>
+            }
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-contact">Contact name <span class="label__req">*</span></label>
+            <input id="ob-contact" class="input" formControlName="contactName" placeholder="Dana Reyes">
+            @if (form.controls.contactName.touched && form.controls.contactName.invalid) {
+              <span class="error-text">Contact name is required.</span>
+            }
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-phone">Phone</label>
+            <input id="ob-phone" class="input" formControlName="contactPhone" placeholder="+1 555 0110">
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-country">Country</label>
+            <input id="ob-country" class="input" formControlName="country">
+          </div>
+
+          <div class="field">
+            <label class="label" for="ob-currency">Default currency <span class="label__req">*</span></label>
+            <select id="ob-currency" class="select" formControlName="currencyCode">
+              @for (code of currencies; track code) {
+                <option [value]="code">{{ code }}</option>
+              }
+            </select>
+            <span class="hint">Used when an offer reward does not name a currency.</span>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row row--between row--wrap">
+          <a class="btn btn--ghost" routerLink="/plans">Back to plans</a>
+          <button class="btn btn--primary btn--lg" type="submit" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> }
+            Create my workspace
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <aside class="onboard__aside">
+    <h3>What we create</h3>
+    <ul class="onboard__list small muted">
+      <li>A tenant record keyed on your email</li>
+      <li>An administrator user for you</li>
+      <li>A dedicated SQL Server database on AWS RDS</li>
+      <li>The promotion schema and starter campaigns</li>
+    </ul>
+
+    @if (plan(); as p) {
+      <div class="divider"></div>
+      <h3>{{ p.name }} includes</h3>
+      <ul class="onboard__list small muted">
+        @for (feature of p.features; track feature) {
+          <li>{{ feature }}</li>
+        }
+      </ul>
+    }
+  </aside>
+</div>

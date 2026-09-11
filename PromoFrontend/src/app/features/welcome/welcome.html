@@ -1,0 +1,103 @@
+<section class="hero">
+  <div class="hero__inner">
+    <div class="hero__copy">
+      <span class="eyebrow">Multi-tenant retail pricing</span>
+      <h1>Build promotions your stores can actually run.</h1>
+      <p class="lede">
+        Thirteen offer templates, from a straight percent off to spend thresholds, tiered
+        buy/get ladders and gift with purchase. Every customer gets an isolated database,
+        provisioned the moment they subscribe.
+      </p>
+
+      @if (error()) {
+        <div class="alert alert--error">{{ error() }}</div>
+      }
+
+      <div class="hero__actions">
+        <a class="btn btn--lg btn--primary" routerLink="/sign-in">Create your workspace</a>
+        <button class="btn btn--lg" type="button" (click)="continueAsGuest()" [disabled]="busy()">
+          @if (busy()) { <span class="spinner"></span> }
+          Continue as guest
+        </button>
+      </div>
+
+      <p class="small muted hero__note">
+        Guests can explore plans and every offer template. Creating promotions needs an
+        account and a subscription, so we know where to put your data.
+      </p>
+    </div>
+
+    <div class="hero__panel">
+      <div class="preview">
+        <div class="preview__bar">
+          <span></span><span></span><span></span>
+          <div class="preview__title">Offer wizard — Buy X, Get Y for Discount</div>
+        </div>
+
+        <div class="preview__body">
+          <div class="preview__steps">
+            <span class="is-done">Offer</span>
+            <span class="is-done">Conditions</span>
+            <span class="is-current">Rewards</span>
+          </div>
+
+          <div class="preview__row">
+            <span class="preview__label">Buy quantity</span>
+            <span class="preview__value">2 <em>EA</em></span>
+          </div>
+          <div class="preview__row">
+            <span class="preview__label">Qualifying items</span>
+            <span class="preview__value">Dept 3100 / Class 12 <em class="ok">Include</em></span>
+          </div>
+          <div class="preview__row">
+            <span class="preview__label">Price restriction</span>
+            <span class="preview__value">Between 15.00 and 60.00</span>
+          </div>
+          <div class="preview__row">
+            <span class="preview__label">Reward</span>
+            <span class="preview__value accent">50% off socks</span>
+          </div>
+          <div class="preview__row">
+            <span class="preview__label">Apply to</span>
+            <span class="preview__value">Regular and clearance</span>
+          </div>
+          <div class="preview__row">
+            <span class="preview__label">Locations</span>
+            <span class="preview__value">Zone North · 42 stores</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="features__inner">
+    <article class="feature">
+      <div class="feature__icon">01</div>
+      <h3>Templates that enforce their own rules</h3>
+      <p class="muted small">
+        Each template declares which conditions, rewards and item lists it takes. The wizard
+        renders from that, and the API rejects anything that does not fit.
+      </p>
+    </article>
+
+    <article class="feature">
+      <div class="feature__icon">02</div>
+      <h3>A database per customer</h3>
+      <p class="muted small">
+        Subscribing provisions an isolated SQL Server database on AWS RDS, named from your
+        email. Promotions never share a table with another tenant.
+      </p>
+    </article>
+
+    <article class="feature">
+      <div class="feature__icon">03</div>
+      <h3>Worksheet to active</h3>
+      <p class="muted small">
+        Submit, approve, cancel and reopen offers, with the lead time rule on price events
+        and a separate path for emergency changes.
+      </p>
+    </article>
+  </div>
+</section>

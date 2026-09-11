@@ -1,0 +1,50 @@
+# ---------- .NET (PromoBackend) ----------
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+artifacts/
+*.nupkg
+*.snupkg
+
+# ---------- Node / Angular (PromoFrontend) ----------
+node_modules/
+dist/
+out-tsc/
+.angular/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+coverage/
+testem.log
+.sass-cache/
+
+# ---------- Editors ----------
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+
+# ---------- Logs / local runtime ----------
+*.log
+api.log
+serve.log
+
+# ---------- Secrets / local config ----------
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db

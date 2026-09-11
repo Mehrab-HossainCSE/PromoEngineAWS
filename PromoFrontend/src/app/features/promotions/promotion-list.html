@@ -1,0 +1,153 @@
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Promotions</h1>
+      <div class="page-head__sub">
+        Temporary price reductions for items and stores over a defined period.
+        @if (result(); as r) { <span>· {{ r.total }} total</span> }
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn" type="button" (click)="showFilters.set(!showFilters())">
+        {{ showFilters() ? 'Hide search' : 'Search' }}
+      </button>
+      <button class="btn btn--primary" type="button" (click)="openCreate()">Create promotion</button>
+    </div>
+  </div>
+
+  @if (showFilters()) {
+    <div class="card filters">
+      <div class="card__body">
+        <form [formGroup]="filters" (ngSubmit)="search()">
+          <div class="grid grid--3">
+            <div class="field field--inline">
+              <label class="label" for="f-num">Promotion</label>
+              <input id="f-num" class="input" type="number" formControlName="promotionNumber" placeholder="1001">
+            </div>
+            <div class="field field--inline">
+              <label class="label" for="f-desc">Description</label>
+              <input id="f-desc" class="input" formControlName="description" placeholder="Autumn event">
+            </div>
+            <div class="field field--inline">
+              <label class="label" for="f-offer">Offer description</label>
+              <input id="f-offer" class="input" formControlName="offerDescription" placeholder="Buy 3 board games">
+            </div>
+            <div class="field field--inline">
+              <label class="label" for="f-status">Status</label>
+              <select id="f-status" class="select" formControlName="status">
+                <option value="">Any status</option>
+                @for (status of statuses; track status) {
+                  <option [value]="status">{{ status }}</option>
+                }
+              </select>
+            </div>
+            <div class="field field--inline">
+              <label class="label" for="f-item">Item</label>
+              <input id="f-item" class="input" formControlName="itemId" placeholder="100200300">
+            </div>
+            <div class="field field--inline">
+              <label class="label" for="f-start">Starts on or after</label>
+              <input id="f-start" class="input" type="date" formControlName="startDate">
+            </div>
+          </div>
+
+          <div class="row row--end filters__actions">
+            <button class="btn btn--ghost" type="button" (click)="clearFilters()">Clear</button>
+            <button class="btn btn--primary" type="submit">Search</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  }
+
+  @if (error()) {
+    <div class="alert alert--error">{{ error() }}</div>
+  }
+
+  <div class="card">
+    @if (loading()) {
+      <div class="empty"><span class="spinner spinner--lg"></span></div>
+    } @else if (!result() || result()!.items.length === 0) {
+      <div class="empty">
+        <div class="empty__title">No promotions yet</div>
+        <p class="small">Create a promotion, then add offers to it using the wizard.</p>
+        <button class="btn btn--primary" type="button" (click)="openCreate()" style="margin-top:14px">
+          Create your first promotion
+        </button>
+      </div>
+    } @else {
+      <div class="table-wrap">
+        <table class="table table--clickable">
+          <thead>
+            <tr>
+              <th style="width:90px">Number</th>
+              <th>Description</th>
+              <th style="width:110px">Campaign</th>
+              <th style="width:80px">Offers</th>
+              <th style="width:150px">Dates</th>
+              <th style="width:110px">Status</th>
+              <th style="width:110px">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (promotion of result()!.items; track promotion.id) {
+              <tr [routerLink]="['/promotions', promotion.id]">
+                <td class="mono">#{{ promotion.promotionNumber }}</td>
+                <td class="strong">{{ promotion.description }}</td>
+                <td>
+                  @if (promotion.campaignCode) {
+                    <span class="badge">{{ promotion.campaignCode }}</span>
+                  } @else { <span class="muted">—</span> }
+                </td>
+                <td>{{ promotion.offerCount }}</td>
+                <td class="small">
+                  @if (promotion.startDate) {
+                    {{ promotion.startDate | date: 'mediumDate' }}
+                    @if (promotion.endDate) { <span class="muted"> → {{ promotion.endDate | date: 'mediumDate' }}</span> }
+                    @else { <span class="muted"> → open</span> }
+                  } @else { <span class="muted">No offers</span> }
+                </td>
+                <td><span [class]="badgeClass(promotion.status)">{{ promotion.status }}</span></td>
+                <td class="small muted">{{ promotion.createdAtUtc | date: 'mediumDate' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  </div>
+</div>
+
+@if (createOpen()) {
+  <div class="modal-backdrop" (click)="closeCreate()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <div class="modal__head">
+        <h2>Create promotion</h2>
+        <button class="icon-btn" type="button" (click)="closeCreate()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal__body">
+        @if (createError()) {
+          <div class="alert alert--error">{{ createError() }}</div>
+        }
+
+        <div class="field">
+          <label class="label" for="new-desc">Promotion description <span class="label__req">*</span></label>
+          <input id="new-desc" class="input" [value]="newDescription()"
+                 (input)="newDescription.set($any($event.target).value)"
+                 placeholder="Autumn Home Event" (keydown.enter)="create()">
+          <span class="hint">You can add offers and locations once the promotion exists.</span>
+        </div>
+      </div>
+
+      <div class="modal__foot">
+        <button class="btn" type="button" (click)="closeCreate()">Cancel</button>
+        <button class="btn btn--primary" type="button" (click)="create()" [disabled]="creating()">
+          @if (creating()) { <span class="spinner"></span> }
+          Create
+        </button>
+      </div>
+    </div>
+  </div>
+}

@@ -1,0 +1,114 @@
+<div class="auth">
+  <div class="auth__card card">
+    <div class="auth__head">
+      <h1>{{ mode() === 'signIn' ? 'Welcome back' : 'Create your workspace' }}</h1>
+      <p class="muted small">
+        {{ mode() === 'signIn'
+            ? 'Sign in to manage your promotions and offers.'
+            : 'Your email names the database we create for you on AWS.' }}
+      </p>
+    </div>
+
+    <div class="auth__body">
+      <div class="segmented auth__tabs">
+        <button type="button" [class.is-active]="mode() === 'signIn'" (click)="setMode('signIn')">Sign in</button>
+        <button type="button" [class.is-active]="mode() === 'register'" (click)="setMode('register')">Register</button>
+      </div>
+
+      @if (error()) {
+        <div class="alert alert--error">{{ error() }}</div>
+      }
+
+      @if (mode() === 'signIn') {
+        <form [formGroup]="signInForm" (ngSubmit)="submit()">
+          <div class="field">
+            <label class="label" for="si-email">Email <span class="label__req">*</span></label>
+            <input id="si-email" class="input" type="email" formControlName="email" autocomplete="email"
+                   placeholder="you@company.com">
+            @if (signInForm.controls.email.touched && signInForm.controls.email.invalid) {
+              <span class="error-text">Enter a valid email address.</span>
+            }
+          </div>
+
+          <div class="field">
+            <label class="label" for="si-password">Password <span class="label__req">*</span></label>
+            <input id="si-password" class="input" type="password" formControlName="password"
+                   autocomplete="current-password" placeholder="••••••••">
+          </div>
+
+          <button class="btn btn--primary btn--block btn--lg" type="submit" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> }
+            Sign in
+          </button>
+        </form>
+      } @else {
+        <form [formGroup]="registerForm" (ngSubmit)="submit()">
+          <div class="field">
+            <label class="label" for="re-email">Work email <span class="label__req">*</span></label>
+            <input id="re-email" class="input" type="email" formControlName="email" autocomplete="email"
+                   placeholder="you@company.com">
+            @if (registerForm.controls.email.touched && registerForm.controls.email.invalid) {
+              <span class="error-text">Enter a valid email address.</span>
+            }
+            <span class="hint">Your tenant database is named from this address.</span>
+          </div>
+
+          <div class="field">
+            <label class="label" for="re-company">Company <span class="label__req">*</span></label>
+            <input id="re-company" class="input" formControlName="companyName" placeholder="Northwind Retail">
+          </div>
+
+          <div class="field">
+            <label class="label" for="re-name">Your name <span class="label__req">*</span></label>
+            <input id="re-name" class="input" formControlName="displayName" placeholder="Dana Reyes">
+          </div>
+
+          <div class="field">
+            <label class="label" for="re-password">Password <span class="label__req">*</span></label>
+            <input id="re-password" class="input" type="password" formControlName="password"
+                   autocomplete="new-password" placeholder="At least 8 characters">
+            @if (registerForm.controls.password.touched && registerForm.controls.password.invalid) {
+              <span class="error-text">Use at least 8 characters.</span>
+            }
+          </div>
+
+          <button class="btn btn--primary btn--block btn--lg" type="submit" [disabled]="busy()">
+            @if (busy()) { <span class="spinner"></span> }
+            Continue to plans
+          </button>
+        </form>
+      }
+
+      <div class="auth__foot small muted">
+        Not ready to sign up? <a routerLink="/welcome">Browse as a guest</a>.
+      </div>
+    </div>
+  </div>
+
+  <aside class="auth__aside">
+    <h2>What happens after you subscribe</h2>
+    <ol class="steps">
+      <li>
+        <span class="steps__num">1</span>
+        <div>
+          <div class="strong">Pick a plan</div>
+          <div class="small muted">The plan decides which of the thirteen offer templates you can use.</div>
+        </div>
+      </li>
+      <li>
+        <span class="steps__num">2</span>
+        <div>
+          <div class="strong">We provision your database</div>
+          <div class="small muted">A dedicated SQL Server database on AWS RDS, named from your email.</div>
+        </div>
+      </li>
+      <li>
+        <span class="steps__num">3</span>
+        <div>
+          <div class="strong">Build promotions</div>
+          <div class="small muted">Offers, conditions, rewards, item hierarchies and store locations.</div>
+        </div>
+      </li>
+    </ol>
+  </aside>
+</div>

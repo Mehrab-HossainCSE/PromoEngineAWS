@@ -1,0 +1,437 @@
+<div class="modal-backdrop" (click)="cancelled.emit()">
+  <div class="modal modal--wide wizard" (click)="$event.stopPropagation()">
+    <div class="modal__head">
+      <div>
+        <h2>{{ isEdit() ? 'Edit offer' : 'Add offer' }}</h2>
+        @if (template(); as t) {
+          <div class="small muted">{{ t.name }} · {{ t.example }}</div>
+        }
+      </div>
+      <button class="icon-btn" type="button" (click)="cancelled.emit()" aria-label="Close">×</button>
+    </div>
+
+    <div class="wizard__train">
+      @for (s of steps(); track s; let i = $index) {
+        <button type="button" class="train__stop" [class.is-current]="s === step()"
+                [class.is-done]="i < stepIndex()" (click)="goTo(s)">
+          <span class="train__num">{{ i + 1 }}</span>
+          {{ stepLabel(s) }}
+        </button>
+      }
+    </div>
+
+    <div class="modal__body wizard__body">
+      @if (error()) {
+        <div class="alert alert--error">
+          <div>
+            {{ error() }}
+            @if (problems().length) {
+              <ul class="problems">
+                @for (problem of problems(); track $index) {
+                  <li>
+                    @if (problem.step; as target) {
+                      <button type="button" class="problems__jump" (click)="goTo(target)">
+                        {{ stepLabel(target) }}
+                      </button>
+                    }
+                    @if (problem.field) { <strong>{{ problem.field }}</strong> — }
+                    {{ problem.message }}
+                  </li>
+                }
+              </ul>
+            }
+          </div>
+        </div>
+      }
+
+      <!-- =============================== OFFER =============================== -->
+      @if (step() === 'offer') {
+        <div class="field">
+          <label class="label" for="w-desc">Offer description <span class="label__req">*</span></label>
+          <input id="w-desc" class="input" [ngModel]="description()" name="description"
+                 (ngModelChange)="description.set($event)" placeholder="Buy any 3 board games, get $10 off">
+        </div>
+
+        <div class="field">
+          <span class="label">Template <span class="label__req">*</span></span>
+
+          @if (availableTemplates().length === 0) {
+            <div class="alert alert--warning">
+              Your plan does not include any offer templates. Upgrade to start building offers.
+            </div>
+          }
+
+          @if (itemTemplates().length) {
+            <div class="tpl-group-label small muted">Item level</div>
+            <div class="tpl-grid">
+              @for (t of itemTemplates(); track t.code) {
+                <button type="button" class="tpl" [class.is-active]="t.code === templateCode()"
+                        [disabled]="isEdit()" (click)="selectTemplate(t.code)">
+                  <span class="tpl__name">{{ t.name }}</span>
+                  <span class="tpl__example">{{ t.example }}</span>
+                </button>
+              }
+            </div>
+          }
+
+          @if (transactionTemplates().length) {
+            <div class="tpl-group-label small muted">Transaction level</div>
+            <div class="tpl-grid">
+              @for (t of transactionTemplates(); track t.code) {
+                <button type="button" class="tpl" [class.is-active]="t.code === templateCode()"
+                        [disabled]="isEdit()" (click)="selectTemplate(t.code)">
+                  <span class="tpl__name">{{ t.name }}</span>
+                  <span class="tpl__example">{{ t.example }}</span>
+                </button>
+              }
+            </div>
+          }
+
+          @if (isEdit()) {
+            <span class="hint">The template cannot be changed on an existing offer.</span>
+          }
+        </div>
+
+        @if (template(); as t) {
+          <p class="small muted wizard__tpl-note">{{ t.description }}</p>
+        }
+
+        <div class="grid grid--2">
+          <div class="field">
+            <label class="label" for="w-start">Start date <span class="label__req">*</span></label>
+            <input id="w-start" class="input" type="date" [ngModel]="startDate()" name="startDate"
+                   (ngModelChange)="startDate.set($event)">
+          </div>
+          <div class="field">
+            <label class="label" for="w-starttime">Start time</label>
+            <input id="w-starttime" class="input" type="time" [ngModel]="startTime()" name="startTime"
+                   (ngModelChange)="startTime.set($event)">
+          </div>
+          <div class="field">
+            <label class="label" for="w-end">End date</label>
+            <input id="w-end" class="input" type="date" [ngModel]="endDate()" name="endDate"
+                   (ngModelChange)="endDate.set($event)">
+            <span class="hint">Leave blank for an open ended offer.</span>
+          </div>
+          <div class="field">
+            <label class="label" for="w-endtime">End time</label>
+            <input id="w-endtime" class="input" type="time" [ngModel]="endTime()" name="endTime"
+                   (ngModelChange)="endTime.set($event)">
+          </div>
+        </div>
+
+        <div class="grid grid--2">
+          <div class="field">
+            <label class="label" for="w-coupon">Coupon code</label>
+            <input id="w-coupon" class="input" [ngModel]="couponCode()" name="couponCode"
+                   (ngModelChange)="couponCode.set($event)" placeholder="GAMES10">
+          </div>
+
+          @if (template()?.allowsDistributionRule) {
+            <div class="field">
+              <label class="label" for="w-dist">Distribution rule</label>
+              <select id="w-dist" class="select" [ngModel]="distributionRule()" name="distributionRule"
+                      (ngModelChange)="distributionRule.set($event)">
+                <option value="BuyItems">Buy items</option>
+                <option value="GetItems">Get items</option>
+                <option value="BothBuyAndGetItems">Both buy and get items</option>
+              </select>
+              <span class="hint">How the discount is spread across the offer's items.</span>
+            </div>
+          }
+        </div>
+
+        <div class="field">
+          <label class="label" for="w-custdesc">Customer description</label>
+          <input id="w-custdesc" class="input" [ngModel]="customerDescription()" name="customerDescription"
+                 (ngModelChange)="customerDescription.set($event)"
+                 placeholder="Buy 3 board games and save $10">
+          <span class="hint">Printed on the receipt or shown on your web site.</span>
+        </div>
+
+        <div class="field">
+          <label class="label" for="w-comments">Comments</label>
+          <textarea id="w-comments" class="textarea" [ngModel]="comments()" name="comments"
+                    (ngModelChange)="comments.set($event)"></textarea>
+        </div>
+
+        <div class="wizard__flags">
+          <label class="check">
+            <input type="checkbox" [ngModel]="couponRequired()" name="couponRequired"
+                   (ngModelChange)="couponRequired.set($event)" [disabled]="!couponCode()">
+            <span>
+              <span class="strong">Coupon code required</span>
+              <span class="hint">The customer must present the coupon for the discount to apply.</span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" [ngModel]="exclusiveDiscount()" name="exclusiveDiscount"
+                   (ngModelChange)="exclusiveDiscount.set($event)">
+            <span>
+              <span class="strong">Exclusive discount</span>
+              <span class="hint">Cannot be combined with other discounts.</span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" [ngModel]="isEmergency()" name="isEmergency"
+                   (ngModelChange)="isEmergency.set($event)">
+            <span>
+              <span class="strong">Emergency offer</span>
+              <span class="hint">Bypasses the price event lead time. Requires a plan that allows it.</span>
+            </span>
+          </label>
+        </div>
+      }
+
+      <!-- ============================ CONDITIONS ============================ -->
+      @if (step() === 'conditions' && template(); as t) {
+        <p class="small muted wizard__intro">
+          Define what the customer must purchase to qualify.
+          @if (t.allowsMultipleConditions) { <span>All conditions must be met.</span> }
+        </p>
+
+        @for (condition of conditions(); track $index) {
+          <div class="cond">
+            <div class="cond__head">
+              <span class="cond__title">
+                @if (t.allowsMultipleConditions) { Condition {{ $index + 1 }} } @else { Buy condition }
+              </span>
+              @if (t.allowsMultipleConditions && conditions().length > 2) {
+                <button class="btn btn--sm btn--danger" type="button" (click)="removeCondition($index)">Remove</button>
+              }
+            </div>
+
+            <div class="cond__body">
+              <div class="grid grid--3">
+                @if (t.conditionKind === 'BuyQuantity') {
+                  <div class="field">
+                    <label class="label">Buy quantity <span class="label__req">*</span></label>
+                    <input class="input" type="number" min="1" [ngModel]="condition.buyQuantity"
+                           [name]="'buyQty' + $index"
+                           (ngModelChange)="patchCondition($index, { buyQuantity: numeric($event) })">
+                  </div>
+                  <div class="field">
+                    <label class="label">Unit of measure</label>
+                    <select class="select" [ngModel]="condition.unitOfMeasure" [name]="'uom' + $index"
+                            (ngModelChange)="patchCondition($index, { unitOfMeasure: $event })">
+                      @for (uom of unitsOfMeasure; track uom) { <option [value]="uom">{{ uom }}</option> }
+                    </select>
+                  </div>
+                }
+
+                @if (t.conditionKind === 'SpendAmount') {
+                  <div class="field">
+                    <label class="label">Spend amount <span class="label__req">*</span></label>
+                    <input class="input" type="number" min="0" step="0.01" [ngModel]="condition.spendAmount"
+                           [name]="'spend' + $index"
+                           (ngModelChange)="patchCondition($index, { spendAmount: numeric($event) })">
+                  </div>
+                  <div class="field">
+                    <label class="label">Currency</label>
+                    <select class="select" [ngModel]="condition.currencyCode" [name]="'ccy' + $index"
+                            (ngModelChange)="patchCondition($index, { currencyCode: $event })">
+                      <option [ngValue]="null">Store currency</option>
+                      @for (code of currencies; track code) { <option [value]="code">{{ code }}</option> }
+                    </select>
+                  </div>
+                }
+              </div>
+
+              @if (t.conditionPriceRestriction) {
+                <div class="price-rest">
+                  <div class="grid grid--3">
+                    <div class="field field--inline">
+                      <label class="label">Items priced</label>
+                      <select class="select" [ngModel]="condition.priceRestriction" [name]="'pr' + $index"
+                              (ngModelChange)="patchCondition($index, { priceRestriction: $event })">
+                        @for (option of priceRestrictionOptions; track option.value) {
+                          <option [value]="option.value">{{ option.label }}</option>
+                        }
+                      </select>
+                    </div>
+
+                    @if (condition.priceRestriction && condition.priceRestriction !== 'None') {
+                      <div class="field field--inline">
+                        <label class="label">
+                          {{ condition.priceRestriction === 'Between' ? 'From' : 'Amount' }}
+                        </label>
+                        <input class="input" type="number" step="0.01" [ngModel]="condition.priceRestrictionFrom"
+                               [name]="'prf' + $index"
+                               (ngModelChange)="patchCondition($index, { priceRestrictionFrom: numeric($event) })">
+                      </div>
+
+                      @if (condition.priceRestriction === 'Between') {
+                        <div class="field field--inline">
+                          <label class="label">To</label>
+                          <input class="input" type="number" step="0.01" [ngModel]="condition.priceRestrictionTo"
+                                 [name]="'prt' + $index"
+                                 (ngModelChange)="patchCondition($index, { priceRestrictionTo: numeric($event) })">
+                        </div>
+                      }
+                    }
+                  </div>
+                  <span class="hint">Only items priced in this range meet the condition.</span>
+                </div>
+              }
+
+              @if (t.hasConditionItems) {
+                <app-item-selector
+                  [items]="conditionItems($index)"
+                  (itemsChange)="setConditionItems($index, $event)"
+                  title="Qualifying items"
+                  hint="What the customer has to buy."
+                  emptyText="No items yet. Add an include rule, or upload an item list, to define what qualifies." />
+              }
+
+              @if (t.conditionSingleItem) {
+                <div class="grid grid--2">
+                  <div class="field">
+                    <label class="label">Item <span class="label__req">*</span></label>
+                    <input class="input" [ngModel]="singleItemId()" name="singleItemId"
+                           (ngModelChange)="singleItemId.set($event)" placeholder="100200300">
+                    <span class="hint">The single item this offer discounts.</span>
+                  </div>
+                  <div class="field">
+                    <label class="label">Item description</label>
+                    <input class="input" [ngModel]="singleItemDescription()" name="singleItemDesc"
+                           (ngModelChange)="singleItemDescription.set($event)" placeholder="Watermelon, whole">
+                  </div>
+                </div>
+              }
+            </div>
+          </div>
+        }
+
+        @if (t.allowsMultipleConditions) {
+          <button class="btn btn--sm" type="button" (click)="addCondition()">Add another condition</button>
+        }
+      }
+
+      <!-- ============================== REWARDS ============================== -->
+      @if (step() === 'rewards' && template(); as t) {
+        @if (t.rewardKind === 'GiftItem') {
+          <p class="small muted wizard__intro">The customer receives a free item when the conditions are met.</p>
+
+          <div class="grid grid--2">
+            <div class="field">
+              <label class="label">Gift item <span class="label__req">*</span></label>
+              <input class="input" [ngModel]="giftItemId()" name="giftItemId"
+                     (ngModelChange)="giftItemId.set($event)" placeholder="555000111">
+            </div>
+            <div class="field">
+              <label class="label">Gift description</label>
+              <input class="input" [ngModel]="giftItemDescription()" name="giftItemDesc"
+                     (ngModelChange)="giftItemDescription.set($event)" placeholder="Beach towel">
+            </div>
+          </div>
+        } @else {
+          <div class="field">
+            <span class="label">Discount <span class="label__req">*</span></span>
+            <div class="row row--wrap">
+              <div class="segmented">
+                @for (option of discountTypes(); track option.value) {
+                  <button type="button" [class.is-active]="discountType() === option.value"
+                          (click)="discountType.set(option.value)">{{ option.label }}</button>
+                }
+              </div>
+
+              <input class="input reward__value" type="number" min="0" step="0.01"
+                     [ngModel]="discountValue()" name="discountValue"
+                     (ngModelChange)="discountValue.set(numeric($event))"
+                     [placeholder]="discountType() === 'PercentOff' ? '25' : '10.00'">
+              <span class="muted small">{{ discountType() === 'PercentOff' ? '% off' : 'per unit' }}</span>
+            </div>
+          </div>
+
+          @if (discountType() !== 'PercentOff') {
+            <div class="field">
+              <label class="check">
+                <input type="checkbox" [ngModel]="allCurrencies()" name="allCurrencies"
+                       (ngModelChange)="allCurrencies.set($event)">
+                <span>Apply this amount in all currencies</span>
+              </label>
+
+              @if (!allCurrencies()) {
+                <select class="select reward__ccy" [ngModel]="currencyCode()" name="currencyCode"
+                        (ngModelChange)="currencyCode.set($event)">
+                  @for (code of currencies; track code) { <option [value]="code">{{ code }}</option> }
+                </select>
+              }
+            </div>
+          }
+        }
+
+        <div class="grid grid--2">
+          @if (t.allowsApplyTo) {
+            <div class="field">
+              <label class="label">Apply to</label>
+              <select class="select" [ngModel]="applyTo()" name="applyTo" (ngModelChange)="applyTo.set($event)">
+                <option value="Regular">Regular</option>
+                <option value="Clearance">Clearance</option>
+                <option value="RegularAndClearance">Regular and clearance</option>
+              </select>
+              <span class="hint">Which retail price the reward applies to.</span>
+            </div>
+          }
+
+          @if (t.allowsApplyDiscountUpTo) {
+            <div class="field">
+              <label class="label">Apply discount up to</label>
+              <input class="input" type="number" min="1" [ngModel]="applyUpTo()" name="applyUpTo"
+                     (ngModelChange)="applyUpTo.set(numeric($event))" placeholder="Unlimited">
+              <span class="hint">Times the discount can apply to one purchase. Blank means unlimited.</span>
+            </div>
+          }
+
+          @if (t.rewardItemMode === 'DiscountedItems') {
+            <div class="field">
+              <label class="label">Get quantity</label>
+              <input class="input" type="number" min="1" [ngModel]="getQuantity()" name="getQuantity"
+                     (ngModelChange)="getQuantity.set(numeric($event))" placeholder="1">
+              <span class="hint">How many reward items the customer receives.</span>
+            </div>
+          }
+        </div>
+
+        @if (t.rewardItemMode === 'None' && t.rewardKind !== 'GiftItem') {
+          <p class="small muted">The discount applies to the qualifying items from the conditions stop.</p>
+        }
+
+        <!-- Every offer can carry its own uploaded product sheet, so this selector is
+             always on the page; when the template has no reward item rules it shows
+             the sheet alone. -->
+        <app-item-selector
+          [(items)]="rewardItems"
+          [(products)]="products"
+          [showProducts]="true"
+          [showItems]="t.rewardItemMode !== 'None'"
+          [title]="t.rewardItemMode === 'ExcludedItems' ? 'Excluded items' : 'Discounted items'"
+          [hint]="t.rewardItemMode === 'ExcludedItems'
+                    ? 'Items that should not receive the transaction discount.'
+                    : 'Items eligible to have the reward applied.'"
+          [defaultAction]="t.rewardItemMode === 'ExcludedItems' ? 'Exclude' : 'Include'"
+          [emptyText]="t.rewardItemMode === 'ExcludedItems'
+                    ? 'No exclusions. The discount will apply to every item on the transaction.'
+                    : 'No items yet. Add an include rule for the merchandise the reward applies to.'" />
+      }
+    </div>
+
+    <div class="modal__foot">
+      <button class="btn btn--ghost" type="button" (click)="cancelled.emit()">Cancel</button>
+      <div class="spacer"></div>
+      @if (stepIndex() > 0) {
+        <button class="btn" type="button" (click)="back()">Back</button>
+      }
+      @if (!isLastStep()) {
+        <button class="btn btn--primary" type="button" (click)="next()">Next</button>
+      } @else {
+        <button class="btn btn--primary" type="button" (click)="save()" [disabled]="saving()">
+          @if (saving()) { <span class="spinner"></span> }
+          {{ isEdit() ? 'Save offer' : 'Add offer' }}
+        </button>
+      }
+    </div>
+  </div>
+</div>

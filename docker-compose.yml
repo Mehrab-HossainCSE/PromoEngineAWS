@@ -1,0 +1,196 @@
+# =============================================================================
+# PromoEngine - production stack for AWS EC2
+#
+#   Internet :80  ->  frontend (Nginx)  ->  backend (.NET)  ->  postgres
+#                     \________________ promoengine network ________________/
+#
+# Every value below that could be a secret is read from a .env file sitting
+# beside this file on the EC2 host. That file is written by the GitHub Actions
+# deploy job from repository secrets and is never committed. This file is
+# infrastructure; .env is configuration.
+#
+#   docker compose pull && docker compose up -d
+# =============================================================================
+
+name: promoengine
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - the single database server that hosts the control-plane catalog
+  # and every per-tenant database created at sign up.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: promoengine-postgres
+    restart: unless-stopped
+
+    environment:
+      # This role owns the server. It is a superuser, which is what lets the
+      # backend issue CREATE DATABASE for each new tenant - see the multi-tenant
+      # notes in DEPLOYMENT.md.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # The control-plane catalog database (tenants, plans, subscriptions).
+      # Tenant databases are created later, at run time, by the application.
+      POSTGRES_DB: ${POSTGRES_DB:-PromoEngineCatalog}
+      # Deterministic collation, so tenant databases created by CREATE DATABASE
+      # inherit the same sort order as the catalog regardless of host locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+
+    volumes:
+      # Named volume: survives `docker compose down`, image upgrades and
+      # redeployment. This is where every tenant database physically lives.
+      - postgres-data:/var/lib/postgresql/data
+
+    # Deliberately not published to the host. PostgreSQL is reachable only from
+    # the private Docker network, so the EC2 security group never has to open
+    # 5432 to the internet. For an SSH-tunnelled admin session, uncomment:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+    networks:
+      - promoengine
+
+    healthcheck:
+      # The backend depends_on waits on this, so it never starts against a
+      # server that is still running initdb.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-PromoEngineCatalog}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    # A tenant sign-up opens a second connection while provisioning, and the
+    # startup schema sync touches every tenant database at once.
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------------------------------------------------------------------
+  # Backend - ASP.NET Core API. Owns the catalog, provisions tenant databases
+  # and routes each request to the database of its tenant.
+  # ---------------------------------------------------------------------------
+  backend:
+    image: ${DOCKER_USERNAME}/promoengine-backend:${IMAGE_TAG:-latest}
+    container_name: promoengine-backend
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+
+      # -- control-plane catalog -------------------------------------------
+      # Host=postgres is the Compose service name, resolved by Docker DNS.
+      # Using localhost here would point the backend at its own container.
+      ConnectionStrings__Catalog: >-
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-PromoEngineCatalog};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD};Pooling=true;Minimum Pool Size=1;Maximum Pool Size=50;Timeout=30;Command Timeout=60
+
+      # -- database-per-tenant provisioning --------------------------------
+      # "Local" means "create databases directly on this PostgreSQL server"
+      # rather than through the RDS control-plane API. Pointed at the postgres
+      # container, it is exactly the right provisioner for this deployment.
+      Tenancy__Provisioner: Local
+      Tenancy__DatabaseNamePrefix: ${TENANT_DB_PREFIX:-PromoEngine_Tenant_}
+      Tenancy__SeedSampleData: ${TENANT_SEED_SAMPLE_DATA:-true}
+      Tenancy__AutoSyncSchemaOnStartup: "true"
+
+      # The provisioner connects to the `postgres` maintenance database to run
+      # CREATE DATABASE (PostgreSQL forbids running it from inside the target
+      # database), then re-uses this same string with the Database swapped for
+      # the new tenant. That derived string is stored in the catalog, which is
+      # why the service name must stay `postgres` for the life of the
+      # deployment.
+      Tenancy__Local__ServerConnectionString: >-
+        Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD};Pooling=false;Timeout=30;Command Timeout=180
+
+      # -- auth -------------------------------------------------------------
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY is required}
+      Jwt__Issuer: ${JWT_ISSUER:-PromoEngine}
+      Jwt__Audience: ${JWT_AUDIENCE:-PromoEngine.Client}
+
+      # -- integration ------------------------------------------------------
+      ExternalPromotionApi__ApiKey: ${EXTERNAL_API_KEY:?EXTERNAL_API_KEY is required}
+
+      # Browser traffic is same-origin through the Nginx proxy, so CORS is not
+      # normally exercised. This stays correct if the API is ever called from
+      # another origin.
+      Cors__AllowedOrigins__0: ${PUBLIC_ORIGIN:-http://localhost}
+
+      Logging__LogLevel__Default: ${LOG_LEVEL:-Information}
+
+    # Not published to the host: the API is reachable only through the frontend
+    # proxy, so port 8080 never needs a security-group rule.
+    expose:
+      - "8080"
+
+    networks:
+      - promoengine
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      # Generous: the first start creates the catalog schema, seeds the plans
+      # and sweeps every existing tenant database for schema drift.
+      start_period: 90s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------------------------------------------------------------------
+  # Frontend - Nginx serving the compiled Angular bundle and proxying /api to
+  # the backend. The only container with a published port.
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ${DOCKER_USERNAME}/promoengine-frontend:${IMAGE_TAG:-latest}
+    container_name: promoengine-frontend
+    restart: unless-stopped
+
+    depends_on:
+      backend:
+        condition: service_started
+
+    ports:
+      - "${HTTP_PORT:-80}:80"
+
+    networks:
+      - promoengine
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+# -----------------------------------------------------------------------------
+networks:
+  promoengine:
+    name: promoengine
+    driver: bridge
+
+volumes:
+  # Tenant data lives here. `docker compose down` leaves it untouched; only an
+  # explicit `docker compose down -v` or `docker volume rm` destroys it, and the
+  # deploy pipeline never issues either.
+  postgres-data:
+    name: promoengine-postgres-data
+    driver: local
