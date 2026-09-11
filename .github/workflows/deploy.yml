@@ -127,8 +127,23 @@ jobs:
           AWS_HOST: ${{ secrets.AWS_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$AWS_KEY" > ~/.ssh/deploy_key
+
+          # `tr -d '\r'` is not decoration. A .pem copied on Windows carries
+          # CRLF line endings, and OpenSSH rejects a private key whose lines end
+          # in CR - reporting it as "error in libcrypto" or, once ssh falls back
+          # to offering nothing, as a plain "Permission denied (publickey)".
+          # Stripping CR here makes a Windows-copied key work unchanged.
+          printf '%s\n' "$AWS_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+
+          # A truncated paste is the other frequent cause, and it is worth a
+          # specific message rather than letting ssh-keygen speak for it.
+          if ! head -1 ~/.ssh/deploy_key | grep -q -- '-----BEGIN'; then
+            echo "::error::AWS_KEY does not start with a -----BEGIN line."
+            echo "  The secret must hold the whole .pem file. Copy it with"
+            echo "  'cat your-key.pem' and select everything, markers included."
+            exit 1
+          fi
 
           # Validate the key before using it. "Permission denied (publickey)"
           # from ssh is the same message whether the key is malformed, is the
