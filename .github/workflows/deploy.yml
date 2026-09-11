@@ -211,6 +211,41 @@ jobs:
             exit 1
           fi
 
+          # Shape checks on POSTGRES_PASSWORD. The value is never echoed - only
+          # facts about it are - so nothing sensitive reaches the log.
+          #
+          # A '$' would be re-interpreted by Compose when it interpolates .env,
+          # so the password the container receives would differ from the secret.
+          # That is a hard failure: it produces an authentication error hours
+          # later that looks nothing like its cause.
+          case "${POSTGRES_PASSWORD}" in
+            *'$'*)
+              echo "::error::POSTGRES_PASSWORD contains a '\$' character."
+              echo "  Docker Compose expands \$NAME when it reads the env file, so the"
+              echo "  database would be created with a different password than the secret"
+              echo "  holds. Regenerate it without '\$'."
+              exit 1
+              ;;
+          esac
+
+          # A password containing a pipe or the word 'openssl' is almost always
+          # the generator command pasted in as literal text instead of its
+          # output. It would 'work', but the password would be a publicly known
+          # string.
+          case "${POSTGRES_PASSWORD}" in
+            *'|'*|*openssl*)
+              echo "::warning::POSTGRES_PASSWORD looks like a shell command rather than a generated password."
+              echo "  If you pasted the generator command itself, run it first and store"
+              echo "  its OUTPUT as the secret:"
+              echo "    openssl rand -base64 32 | tr -d '/+=' | cut -c1-32"
+              echo "  Note that changing it later does NOT change the password inside an"
+              echo "  existing PostgreSQL volume - see DEPLOYMENT.md section 3."
+              ;;
+          esac
+
+          # Length is a fact about the secret, not the secret.
+          echo "POSTGRES_DB is ${#POSTGRES_DB} characters; POSTGRES_PASSWORD is ${#POSTGRES_PASSWORD} characters."
+
       # Authentication is by far the most common first-deploy failure, and ssh
       # reports every cause with the same "Permission denied (publickey)". This
       # step separates them before any file is copied.
@@ -244,46 +279,83 @@ jobs:
               "$AWS_USER@$AWS_HOST" true 2>&1 | sed 's/^/  /' || true
           exit 1
 
-      # Everything the deployment needs on the host, checked in one round trip
-      # so a missing prerequisite is named rather than surfacing later as a
-      # "permission denied" from whichever command happened to hit it first.
-      - name: Verify host readiness
+      # A fresh EC2 instance has no Docker. Rather than failing and asking for a
+      # manual step, the pipeline runs the same ec2-setup.sh that ships in the
+      # repository. The script is idempotent: on an already-prepared host it
+      # detects everything is present and does nothing.
+      - name: Prepare the EC2 host
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
         run: |
+          scp -i ~/.ssh/deploy_key deploy/ec2-setup.sh "$AWS_USER@$AWS_HOST:~/ec2-setup.sh"
+
+          # First connection: decide whether preparation is needed, and do it.
+          # The keepalives matter here and nowhere else in this workflow: a
+          # Docker install on a fresh instance can sit quiet for minutes, long
+          # enough for an idle NAT or security appliance to drop the session.
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes               -o ServerAliveInterval=30 -o ServerAliveCountMax=20               "$AWS_USER@$AWS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+
+          needs_setup=0
+          command -v docker > /dev/null 2>&1            || needs_setup=1
+          docker compose version > /dev/null 2>&1       || needs_setup=1
+          docker ps > /dev/null 2>&1                    || needs_setup=1
+          [ -w /opt/promoengine ]                       || needs_setup=1
+
+          if [ "$needs_setup" -eq 0 ]; then
+            echo "Host already prepared: $(docker --version), compose $(docker compose version --short)"
+            exit 0
+          fi
+
+          # Everything below needs root. Without passwordless sudo the setup
+          # script would block on a password prompt that nothing can answer, so
+          # stop here with an explanation instead of hanging until SSH times out.
+          if ! sudo -n true 2>/dev/null; then
+            echo "::error::$(id -un) does not have passwordless sudo on this host."
+            echo "  Installing Docker needs root, and a pipeline cannot answer a"
+            echo "  password prompt. Either log in and run ec2-setup.sh by hand, or"
+            echo "  restore passwordless sudo for this user. On a stock Ubuntu AMI"
+            echo "  the 'ubuntu' user has it via /etc/sudoers.d/90-cloud-init-users."
+            exit 1
+          fi
+
+          echo "Host is not ready yet - running ec2-setup.sh. This takes a few"
+          echo "minutes on a fresh instance while Docker is installed."
+          chmod +x ~/ec2-setup.sh
+          ~/ec2-setup.sh
+          REMOTE
+
+          # Second connection, deliberately separate. `usermod -aG docker` only
+          # takes effect for sessions started after it runs, so the check that
+          # the deploy user can reach the daemon without sudo is only meaningful
+          # in a brand-new login session.
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$AWS_USER@$AWS_HOST" 'bash -s' <<'REMOTE'
           set -u
           problems=0
 
           if ! command -v docker > /dev/null 2>&1; then
-            echo "MISSING: docker is not installed."
+            echo "STILL MISSING: docker is not installed."
             problems=1
           elif ! docker ps > /dev/null 2>&1; then
-            echo "MISSING: docker is installed but this user cannot use it without sudo."
-            echo "         The deploy runs non-interactively and cannot answer a sudo prompt."
-            echo "         Fix with: sudo usermod -aG docker \$USER   (then reconnect)"
+            echo "STILL MISSING: $(id -un) cannot reach the Docker daemon without sudo."
+            echo "               Check that the user is in the docker group: id -nG"
             problems=1
           fi
 
           if command -v docker > /dev/null 2>&1 && ! docker compose version > /dev/null 2>&1; then
-            echo "MISSING: the docker compose plugin is not installed."
-            problems=1
-          fi
-
-          if ! sudo -n true 2>/dev/null && [ ! -w /opt/promoengine ] 2>/dev/null; then
-            echo "MISSING: no passwordless sudo, and /opt/promoengine is not writable."
+            echo "STILL MISSING: the docker compose plugin is not installed."
             problems=1
           fi
 
           if [ "$problems" -ne 0 ]; then
             echo ""
-            echo "Run deploy/ec2-setup.sh on this host once, then reconnect so the"
-            echo "docker group membership takes effect, and re-run this workflow."
+            echo "Automatic preparation ran but did not leave the host usable."
+            echo "Log in and run ./ec2-setup.sh manually to see the full output."
             exit 1
           fi
 
-          echo "Host is ready: $(docker --version), $(docker compose version --short)"
+          echo "Host ready: $(docker --version), compose $(docker compose version --short)"
           REMOTE
 
       - name: Copy deployment files to EC2

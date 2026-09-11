@@ -2,13 +2,20 @@
 # =============================================================================
 # PromoEngine - one-time EC2 host preparation
 #
-# Run this ONCE on a fresh EC2 instance, before the first GitHub Actions deploy.
-# It installs Docker, installs the Compose plugin, creates the deployment
-# directory and pre-creates the PostgreSQL volume and the Docker network so
-# that the very first `compose up` has nothing left to discover.
+# The deploy pipeline copies this script to the instance and runs it whenever
+# the host is not ready, so it normally needs no manual invocation. It is also
+# safe to run by hand - every step checks first, so a second run does nothing.
+#
+# It installs Docker, installs the Compose plugin, adds the login user to the
+# docker group, creates the deployment directory and pre-creates the PostgreSQL
+# volume and the Docker network so that the very first `compose up` has nothing
+# left to discover.
 #
 #   curl -fsSL -o ec2-setup.sh <raw url>   # or scp it across
 #   chmod +x ec2-setup.sh && ./ec2-setup.sh
+#
+# The one thing it cannot arrange for itself is passwordless sudo: installing
+# packages needs root, and the pipeline cannot answer a password prompt.
 #
 # Supports Amazon Linux 2023 and Ubuntu 22.04/24.04.
 # =============================================================================
@@ -17,6 +24,18 @@ set -Eeuo pipefail
 APP_DIR="/opt/promoengine"
 POSTGRES_VOLUME="promoengine-postgres-data"
 DOCKER_NETWORK="promoengine"
+
+# `id -un` rather than $USER: this script is also run unattended over SSH by the
+# deploy pipeline, and a non-interactive shell is precisely where $USER is least
+# reliable. `id` asks the kernel and is always right.
+RUN_USER="$(id -un)"
+
+# Ubuntu's apt will otherwise stop on a config-file prompt or on needrestart's
+# "which services should be restarted?" dialog, and an unattended run would hang
+# there until the SSH connection times out.
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -87,11 +106,11 @@ fi
 # The GitHub Actions SSH session is non-interactive and cannot answer a sudo
 # password prompt, so the login user must be in the docker group.
 # -----------------------------------------------------------------------------
-if id -nG "${USER}" | tr ' ' '\n' | grep -qx docker; then
-  log "${USER} is already in the docker group"
+if id -nG "${RUN_USER}" | tr ' ' '\n' | grep -qx docker; then
+  log "${RUN_USER} is already in the docker group"
 else
-  log "Adding ${USER} to the docker group"
-  sudo usermod -aG docker "${USER}"
+  log "Adding ${RUN_USER} to the docker group"
+  sudo usermod -aG docker "${RUN_USER}"
   NEEDS_RELOGIN=1
 fi
 
@@ -103,7 +122,7 @@ fi
 # -----------------------------------------------------------------------------
 log "Creating ${APP_DIR}"
 sudo mkdir -p "${APP_DIR}"
-sudo chown "${USER}:${USER}" "${APP_DIR}"
+sudo chown "${RUN_USER}:${RUN_USER}" "${APP_DIR}"
 chmod 750 "${APP_DIR}"
 
 # -----------------------------------------------------------------------------

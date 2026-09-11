@@ -382,23 +382,37 @@ ssh -L 5432:localhost:5432 ec2-user@<host>   # after uncommenting the ports
                                              # block in docker-compose.yml
 ```
 
-### Host preparation — run once
+### Host preparation — automatic
+
+Nothing needs to be done on the instance by hand. The pipeline's **Prepare the
+EC2 host** step copies [deploy/ec2-setup.sh](deploy/ec2-setup.sh) to the
+instance and runs it whenever the host is not ready, then re-checks over a
+*second* SSH connection — `usermod -aG docker` only applies to sessions opened
+after it runs, so checking in the same session would give a false negative.
+
+The script installs Docker and the Compose v2 plugin, adds the login user to
+the `docker` group, creates `/opt/promoengine`, pre-creates the
+`promoengine-postgres-data` volume and the `promoengine` network, and caps
+Docker's log growth. It is idempotent: on an already-prepared host every check
+short-circuits and it does nothing, so it costs one SSH round trip per deploy.
+
+The single prerequisite it cannot provide for itself is **passwordless sudo**,
+because installing packages needs root and a pipeline cannot answer a password
+prompt. Stock Amazon Linux and Ubuntu AMIs grant it to the default login user
+through `/etc/sudoers.d/90-cloud-init-users`. If it has been removed, the step
+stops with that specific message rather than hanging.
+
+To prepare a host manually instead — useful when you want to watch the install:
 
 ```bash
-ssh -i promo-key.pem ec2-user@<ec2-host>
-
-# copy deploy/ec2-setup.sh across, or paste it, then:
-chmod +x ec2-setup.sh
-./ec2-setup.sh
+ssh -i promo-key.pem ubuntu@<ec2-host>
+curl -fsSL https://raw.githubusercontent.com/Mehrab-HossainCSE/PromoEngineAWS/main/deploy/ec2-setup.sh -o ec2-setup.sh
+chmod +x ec2-setup.sh && ./ec2-setup.sh
 
 # the script adds you to the docker group; the new membership needs a new session
-exit && ssh -i promo-key.pem ec2-user@<ec2-host>
+exit && ssh -i promo-key.pem ubuntu@<ec2-host>
 docker ps          # must work without sudo, or the pipeline cannot deploy
 ```
-
-It installs Docker and the Compose v2 plugin, creates `/opt/promoengine`,
-pre-creates the `promoengine-postgres-data` volume and the `promoengine`
-network, and caps Docker's log growth.
 
 ### First deployment
 
@@ -408,9 +422,15 @@ Add all seven repository secrets first. Generate the database password with:
 openssl rand -base64 32 | tr -d '/+=' | cut -c1-32
 ```
 
-Keep it alphanumeric — `;` and `=` are delimiters in a connection string. The
-pipeline fails the run immediately if any required secret is missing, so there
-is no half-configured state to clean up. Then:
+Store the **output** of that command, not the command itself. Keep it
+alphanumeric: `;` and `=` are delimiters in a connection string, and `$` is
+worse — Docker Compose expands `$NAME` while reading the env file, so the
+database would end up with a different password than the secret holds. The
+pipeline rejects a `$` outright and warns if the value looks like an unrun
+shell command.
+
+The pipeline fails the run immediately if any required secret is missing, so
+there is no half-configured state to clean up. Then:
 
 ```bash
 git push origin main
