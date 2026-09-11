@@ -287,6 +287,15 @@ secret expands to an empty string, and the merge on the host skips empty values
 — without that check the symptom would be a confusing "not set" error from a
 file the pipeline had just written.
 
+**`AWS_HOST` must be the public address.** The EC2 console shows the private
+name, `ip-172-31-x-x.<region>.compute.internal`, at least as prominently as the
+public one, and a private VPC address is reachable from neither a GitHub-hosted
+runner nor a browser. It also becomes the CORS origin, so a wrong value here
+survives a successful SSH and then breaks the application in the browser. The
+overlay step rejects `*.internal`, `127.*`, `10.*`, `192.168.*` and
+`172.16–172.31.*`. Note that a public IPv4 address is reassigned every time the
+instance is stopped and started; allocate an Elastic IP to pin it.
+
 ### The committed [.env](.env) — no credentials
 
 | Variable | Consumed by |

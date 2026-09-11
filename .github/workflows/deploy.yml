@@ -243,8 +243,44 @@ jobs:
               ;;
           esac
 
+          # A weak password is the operator's call, but it is worth being loud
+          # about the timing: PostgreSQL fixes the password at initdb, so once
+          # the volume exists, changing this secret no longer changes anything.
+          # The cheap moment to fix it is before the first successful deploy.
+          if [ "${#POSTGRES_PASSWORD}" -lt 12 ]; then
+            echo "::warning::POSTGRES_PASSWORD is only ${#POSTGRES_PASSWORD} characters."
+            echo "  The deploy will proceed. Two things to know:"
+            echo "  1. PostgreSQL is not published to the host and has no security-group"
+            echo "     rule, so it is reachable only from inside the Docker network."
+            echo "     A weak password here is not directly exposed to the internet."
+            echo "  2. The password is fixed when the data directory is first created."
+            echo "     After the first successful deploy, changing this secret has no"
+            echo "     effect without an ALTER USER on the running server plus a rewrite"
+            echo "     of the stored tenant connection strings (DEPLOYMENT.md section 3)."
+            echo "  Change it now if you are going to change it at all."
+          fi
+
           # Length is a fact about the secret, not the secret.
           echo "POSTGRES_DB is ${#POSTGRES_DB} characters; POSTGRES_PASSWORD is ${#POSTGRES_PASSWORD} characters."
+
+          # AWS_HOST has to be reachable from two places that are not this
+          # runner: the GitHub-hosted runner itself, and a user's browser. A
+          # private VPC address satisfies neither, and an EC2 instance shows its
+          # private name prominently in the console, so it is an easy mistake.
+          # It also becomes the CORS origin, so a wrong value here breaks the
+          # browser long after SSH has succeeded.
+          case "${AWS_HOST}" in
+            *.internal|*.internal.*|localhost|127.*|10.*|192.168.*|            172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+              echo "::error::AWS_HOST is a private address that GitHub Actions cannot reach."
+              echo "  Values like ip-172-31-46-212.eu-north-1.compute.internal are the"
+              echo "  instance's PRIVATE DNS name, routable only inside your VPC."
+              echo "  Use the Public IPv4 address, or the Public IPv4 DNS name, from the"
+              echo "  EC2 console instance summary."
+              echo "  A public IPv4 address changes every time the instance is stopped and"
+              echo "  started. Allocate an Elastic IP and associate it to pin it."
+              exit 1
+              ;;
+          esac
 
       # Authentication is by far the most common first-deploy failure, and ssh
       # reports every cause with the same "Permission denied (publickey)". This
