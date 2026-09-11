@@ -244,13 +244,72 @@ jobs:
               "$AWS_USER@$AWS_HOST" true 2>&1 | sed 's/^/  /' || true
           exit 1
 
+      # Everything the deployment needs on the host, checked in one round trip
+      # so a missing prerequisite is named rather than surfacing later as a
+      # "permission denied" from whichever command happened to hit it first.
+      - name: Verify host readiness
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$AWS_USER@$AWS_HOST" 'bash -s' <<'REMOTE'
+          set -u
+          problems=0
+
+          if ! command -v docker > /dev/null 2>&1; then
+            echo "MISSING: docker is not installed."
+            problems=1
+          elif ! docker ps > /dev/null 2>&1; then
+            echo "MISSING: docker is installed but this user cannot use it without sudo."
+            echo "         The deploy runs non-interactively and cannot answer a sudo prompt."
+            echo "         Fix with: sudo usermod -aG docker \$USER   (then reconnect)"
+            problems=1
+          fi
+
+          if command -v docker > /dev/null 2>&1 && ! docker compose version > /dev/null 2>&1; then
+            echo "MISSING: the docker compose plugin is not installed."
+            problems=1
+          fi
+
+          if ! sudo -n true 2>/dev/null && [ ! -w /opt/promoengine ] 2>/dev/null; then
+            echo "MISSING: no passwordless sudo, and /opt/promoengine is not writable."
+            problems=1
+          fi
+
+          if [ "$problems" -ne 0 ]; then
+            echo ""
+            echo "Run deploy/ec2-setup.sh on this host once, then reconnect so the"
+            echo "docker group membership takes effect, and re-run this workflow."
+            exit 1
+          fi
+
+          echo "Host is ready: $(docker --version), $(docker compose version --short)"
+          REMOTE
+
       - name: Copy deployment files to EC2
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key "$AWS_USER@$AWS_HOST" \
-            "mkdir -p /opt/promoengine && chmod 750 /opt/promoengine"
+          # /opt is root-owned, so the directory is created with sudo and then
+          # handed to the deploy user. Doing it here means a host that never had
+          # ec2-setup.sh run still deploys, instead of failing on mkdir.
+          ssh -i ~/.ssh/deploy_key "$AWS_USER@$AWS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          APP_DIR=/opt/promoengine
+
+          if [ ! -d "$APP_DIR" ]; then
+            sudo -n mkdir -p "$APP_DIR"
+          fi
+
+          # Take ownership if it is still root's, so every later step - scp
+          # included - works without sudo.
+          if [ ! -w "$APP_DIR" ]; then
+            sudo -n chown "$(id -u):$(id -g)" "$APP_DIR"
+          fi
+
+          chmod 750 "$APP_DIR"
+          REMOTE
 
           scp -i ~/.ssh/deploy_key \
             docker-compose.yml \
