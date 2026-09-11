@@ -129,6 +129,30 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$AWS_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+
+          # Validate the key before using it. "Permission denied (publickey)"
+          # from ssh is the same message whether the key is malformed, is the
+          # wrong key, or the username is wrong - so rule out the first case
+          # here, where the error can be specific.
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub 2> /tmp/keyerr; then
+            echo "::error::The AWS_KEY secret is not a usable OpenSSH private key."
+            sed 's/^/  ssh-keygen: /' /tmp/keyerr
+            echo "  Check that the secret holds the ENTIRE .pem file, including the"
+            echo "  -----BEGIN ...----- and -----END ...----- lines, with no extra"
+            echo "  indentation. A PuTTY .ppk file will not work: convert it first"
+            echo "  with 'puttygen key.ppk -O private-openssh -o key.pem'."
+            exit 1
+          fi
+
+          # The fingerprint and public key are not secret, and printing them is
+          # what turns an auth failure into a five-second diagnosis: compare
+          # this against ~/.ssh/authorized_keys on the instance.
+          echo "Deployment key parsed successfully:"
+          ssh-keygen -l -f ~/.ssh/deploy_key.pub
+          echo ""
+          echo "Public half of AWS_KEY (must appear in authorized_keys on the EC2 host):"
+          cat ~/.ssh/deploy_key.pub
+
           # Trust on first use. To pin instead, store the output of
           # `ssh-keyscan <host>` as a secret and write it here.
           ssh-keyscan -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
@@ -171,6 +195,39 @@ jobs:
             echo "::error::Missing repository secret(s):${missing} - add them under Settings > Secrets and variables > Actions."
             exit 1
           fi
+
+      # Authentication is by far the most common first-deploy failure, and ssh
+      # reports every cause with the same "Permission denied (publickey)". This
+      # step separates them before any file is copied.
+      - name: Verify SSH access
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          if ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+                 "$AWS_USER@$AWS_HOST" "echo connected as \$(whoami) on \$(hostname)"; then
+            exit 0
+          fi
+
+          echo "::error::SSH authentication to $AWS_HOST failed."
+          echo ""
+          echo "The connection reached sshd, so port 22 and the security group are fine."
+          echo "That leaves three causes:"
+          echo ""
+          echo "  1. AWS_USER does not match the AMI. Amazon Linux uses 'ec2-user',"
+          echo "     Ubuntu uses 'ubuntu', Debian 'admin', RHEL 'ec2-user'."
+          echo "     AWS_USER is currently ${#AWS_USER} characters long."
+          echo "  2. The instance was launched with a different key pair than AWS_KEY."
+          echo "     Compare the fingerprint printed above with the key pair shown on"
+          echo "     the instance in the EC2 console."
+          echo "  3. The public half is missing from ~/.ssh/authorized_keys, or that"
+          echo "     file has wrong permissions (it must be 600, and ~/.ssh 700)."
+          echo ""
+          echo "Verbose handshake follows - look for 'Authentications that can continue'"
+          echo "and which key ssh offered:"
+          ssh -vv -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+              "$AWS_USER@$AWS_HOST" true 2>&1 | sed 's/^/  /' || true
+          exit 1
 
       - name: Copy deployment files to EC2
         env:
