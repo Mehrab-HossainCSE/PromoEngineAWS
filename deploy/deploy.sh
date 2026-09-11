@@ -16,7 +16,13 @@ set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/opt/promoengine}"
 ENV_FILE="${APP_DIR}/.env"
-ENV_FROM_CI="${APP_DIR}/.env.ci"
+
+# Two inputs, merged in this order so a GitHub secret always beats a committed
+# value: the repository's own .env (database configuration and tunables), then
+# the overlay the pipeline built from the five GitHub secrets.
+ENV_FROM_REPO="${APP_DIR}/env.repo"
+ENV_FROM_CI="${APP_DIR}/env.ci"
+
 COMPOSE_FILE="${APP_DIR}/docker-compose.yml"
 POSTGRES_VOLUME="promoengine-postgres-data"
 
@@ -41,10 +47,13 @@ fi
 # -----------------------------------------------------------------------------
 # 1. Build .env
 #
-# Values that come from GitHub secrets arrive in .env.ci and overwrite what is
-# there. Values that must stay stable across deploys - the JWT signing key, the
-# external API key - are generated once and then preserved, because rotating
-# the signing key on every push would sign every user out on every push.
+# Three layers, lowest precedence first:
+#   1. env.repo - the .env committed in the repository: database name and
+#      password, tenant prefix, port, log level.
+#   2. env.ci   - built by the pipeline from the five GitHub secrets.
+#   3. generated - the JWT signing key and external API key, created once on
+#      this host and then preserved. Rotating the signing key on every push
+#      would sign every user out on every push.
 # -----------------------------------------------------------------------------
 log "Assembling environment file"
 
@@ -76,18 +85,31 @@ ensure_generated() {
   fi
 }
 
-if [[ -f "${ENV_FROM_CI}" ]]; then
-  while IFS= read -r line; do
+# Copies every KEY=VALUE from a delivered file into .env. Comment and blank
+# lines are skipped, and so is any key with an empty value - an empty value
+# means "not configured", and blanking what the host already has would break a
+# running deployment rather than leave it alone.
+merge_env_file() {
+  local source_file="$1" line key value
+  [[ -f "${source_file}" ]] || return 0
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"                      # tolerate CRLF
     [[ -z "${line}" || "${line}" == \#* ]] && continue
+    [[ "${line}" != *=* ]] && continue
     key="${line%%=*}"
     value="${line#*=}"
-    # An empty value in .env.ci means "the secret is not configured"; leave
-    # whatever the host already had rather than blanking it.
     [[ -z "${value}" ]] && continue
     upsert_env "${key}" "${value}"
-  done < "${ENV_FROM_CI}"
-  rm -f "${ENV_FROM_CI}"
-fi
+  done < "${source_file}"
+
+  rm -f "${source_file}"
+}
+
+# Order matters: the committed configuration is laid down first, then the
+# GitHub secrets overwrite anything they also define.
+merge_env_file "${ENV_FROM_REPO}"
+merge_env_file "${ENV_FROM_CI}"
 
 ensure_generated JWT_SIGNING_KEY
 ensure_generated EXTERNAL_API_KEY
@@ -109,8 +131,10 @@ default_env TENANT_SEED_SAMPLE_DATA "true"
 default_env HTTP_PORT               "80"
 default_env LOG_LEVEL               "Information"
 
-[[ -n "$(read_env POSTGRES_PASSWORD)" ]] || die "POSTGRES_PASSWORD is not set in ${ENV_FILE}."
-[[ -n "$(read_env DOCKER_USERNAME)"   ]] || die "DOCKER_USERNAME is not set in ${ENV_FILE}."
+[[ -n "$(read_env POSTGRES_PASSWORD)" ]] \
+  || die "POSTGRES_PASSWORD is not set. It comes from the .env committed in the repository."
+[[ -n "$(read_env DOCKER_USERNAME)" ]] \
+  || die "DOCKER_USERNAME is not set. It comes from the GitHub secret of the same name."
 
 # -----------------------------------------------------------------------------
 # 2. Report what is about to run

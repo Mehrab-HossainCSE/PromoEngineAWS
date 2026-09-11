@@ -19,7 +19,10 @@ Dockerfile      text eol=lf
 *.conf          text eol=lf
 *.yml           text eol=lf
 *.yaml          text eol=lf
-.env.example    text eol=lf
+
+# Copied to the EC2 host and parsed there by deploy.sh. The parser strips a
+# trailing CR defensively, but the file has no reason to carry one.
+.env            text eol=lf
 
 # ---- must be CRLF: Windows tooling ----
 *.bat           text eol=crlf

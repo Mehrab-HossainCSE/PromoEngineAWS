@@ -17,7 +17,7 @@ developer machine creates it on the PostgreSQL container in production.
 | [PromoFrontend/nginx/default.conf](PromoFrontend/nginx/default.conf) | SPA routing, `/api` reverse proxy, caching, security headers |
 | [PromoFrontend/.dockerignore](PromoFrontend/.dockerignore) | Keeps `node_modules` and `dist` out of the build context |
 | [docker-compose.yml](docker-compose.yml) | Production stack: frontend, backend, postgres |
-| [.env.example](.env.example) | Template for the host `.env` (the real one is never committed) |
+| [.env](.env) | **Committed** database configuration and deployment tunables |
 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Build → push → deploy on every push to `main` |
 | [deploy/ec2-setup.sh](deploy/ec2-setup.sh) | One-time EC2 host preparation |
 | [deploy/deploy.sh](deploy/deploy.sh) | Server-side deploy: pull, restart, verify, prune |
@@ -231,17 +231,61 @@ outside the scope of this containerisation work.
 
 ---
 
-## 5. GitHub secrets — exactly where each one is used
+## 5. Configuration: where every value comes from
 
-| Secret | Used in | Line of use |
+Configuration arrives from two places, merged on the host in a defined order.
+
+```
+repository .env            five GitHub secrets
+  (committed)                (never committed)
+       │                            │
+       │  scp as env.repo           │  scp as env.ci
+       └────────────┬───────────────┘
+                    ▼
+        deploy.sh merges, secrets last
+                    ▼
+        /opt/promoengine/.env   (chmod 600)
+                    ▼
+        docker-compose.yml  ${VARIABLE} substitution
+                    ▼
+        container environment → .NET configuration
+```
+
+A GitHub secret always wins over a committed value of the same name, so a
+setting can be overridden without editing the repository.
+
+### The five GitHub secrets
+
+| Secret | Used in | How |
 |---|---|---|
-| `DOCKER_USERNAME` | `deploy.yml` → `docker/login-action`, image tags, `.env.ci` | `${{ secrets.DOCKER_USERNAME }}/promoengine-backend:…`; becomes `DOCKER_USERNAME` in `.env`, which `docker-compose.yml` reads to resolve `image:` |
+| `DOCKER_USERNAME` | `deploy.yml` → `docker/login-action`, image tags, `env.ci` | `${{ secrets.DOCKER_USERNAME }}/promoengine-backend:…`; becomes `DOCKER_USERNAME` in the host `.env`, which `docker-compose.yml` reads to resolve `image:` |
 | `DOCKER_PASSWORD` | `deploy.yml` → login on the runner (push) and on EC2 (pull) | `docker/login-action`; base64-piped into `docker login --password-stdin` over SSH |
-| `AWS_HOST` | `deploy.yml` → `ssh-keyscan`, `scp`, `ssh`, public health check, `PUBLIC_ORIGIN` | becomes `PUBLIC_ORIGIN` in `.env` → `Cors__AllowedOrigins__0` |
+| `AWS_HOST` | `deploy.yml` → `ssh-keyscan`, `scp`, `ssh`, public health check | also becomes `PUBLIC_ORIGIN` → `Cors__AllowedOrigins__0` |
 | `AWS_USER` | `deploy.yml` → SSH login user | `ssh "$AWS_USER@$AWS_HOST"` |
 | `AWS_KEY` | `deploy.yml` → written to `~/.ssh/deploy_key`, deleted afterwards | PEM private key for the EC2 key pair |
-| `POSTGRES_DB` | `.env.ci` → `.env` | `POSTGRES_DB` for the postgres container **and** `Database=` in `ConnectionStrings__Catalog` |
-| `POSTGRES_PASSWORD` | `.env.ci` → `.env` | `POSTGRES_PASSWORD` for the postgres container **and** `Password=` in both the catalog and the tenant-provisioning connection strings |
+
+### The committed [.env](.env)
+
+| Variable | Consumed by |
+|---|---|
+| `POSTGRES_USER` | postgres container; `Username=` in both connection strings |
+| `POSTGRES_DB` | postgres container; `Database=` in `ConnectionStrings__Catalog` |
+| `POSTGRES_PASSWORD` | postgres container; `Password=` in the catalog **and** the tenant-provisioning connection string |
+| `TENANT_DB_PREFIX` | `Tenancy__DatabaseNamePrefix` — the `PromoEngine_Tenant_` prefix |
+| `TENANT_SEED_SAMPLE_DATA` | `Tenancy__SeedSampleData` |
+| `HTTP_PORT` | host port the frontend publishes |
+| `LOG_LEVEL` | `Logging__LogLevel__Default` |
+
+> ⚠️ **This file is committed, so everyone who can read the repository can read
+> the database password.** That is an accepted trade-off for keeping GitHub
+> secrets down to five, and it is safe only while PostgreSQL has no published
+> port — which is how [docker-compose.yml](docker-compose.yml) ships it, so the
+> password is not usable from outside the EC2 host. **If the repository is
+> public, make it private**, or treat the password as disposable and rotate it
+> (see §3 — a rotation also requires rewriting the stored tenant connection
+> strings). To move it back into GitHub secrets later, delete the two lines
+> from `.env` and add them to the `Assemble secret overlay` step; the merge
+> skips empty values, so nothing else has to change.
 
 ### Two secrets that are generated rather than configured
 
@@ -263,25 +307,31 @@ sudo grep '^EXTERNAL_API_KEY=' /opt/promoengine/.env
 > generator leaves it alone — otherwise those callers start getting 401s.
 
 To manage either through GitHub instead, add it as a repository secret and one
-line to the `Assemble environment file` step:
+line to the `Assemble secret overlay` step:
 
 ```yaml
 echo "JWT_SIGNING_KEY=${{ secrets.JWT_SIGNING_KEY }}"
 ```
 
-An empty value in `.env.ci` is skipped by `deploy.sh` rather than blanking what
-the host already has, so adding the secret later is safe.
+An empty value in the overlay is skipped by `deploy.sh` rather than blanking
+what the host already has, so adding the secret later is safe.
 
-### Secrets never reach a log or an image
+### What stays out of the repository and the logs
 
-- `.env` is written only on the EC2 host, `chmod 600`, and is git-ignored.
+- The five GitHub secrets are never committed and never echoed.
+- `/opt/promoengine/.env` is assembled on the host, `chmod 600`.
 - No secret is an argument to any command on the EC2 host, so none is visible in
   `ps`. The remote script arrives on `bash -s`'s stdin; the Docker Hub token is
   base64-encoded so no character in it can break out of shell quoting.
 - No `ARG`/`ENV` in either Dockerfile carries a credential — configuration
   arrives at container start.
-- `~/.ssh/deploy_key` and `.env.ci` are deleted in an `if: always()` step.
-- `appsettings.Local.json`, `.env*` and `secrets.json` are in `.dockerignore`.
+- `~/.ssh/deploy_key` and the overlay file are deleted in an `if: always()` step;
+  `env.repo` and `env.ci` are deleted on the host once merged.
+- `appsettings.Local.json`, `.env*` and `secrets.json` are in `.dockerignore`,
+  so the committed `.env` never becomes an image layer either.
+
+The one deliberate exception is `POSTGRES_USER`/`POSTGRES_DB`/`POSTGRES_PASSWORD`
+in the committed [.env](.env) — see the warning in §5.
 
 > **Password characters matter.** `POSTGRES_PASSWORD` is interpolated into an
 > Npgsql connection string, where `;` and `=` are delimiters, and into a
@@ -338,7 +388,14 @@ network, and caps Docker's log growth.
 
 ### First deployment
 
-With the seven secrets configured, the first deployment is just:
+Set `POSTGRES_PASSWORD` in the committed [.env](.env) first — it ships with a
+placeholder, and the deploy refuses to run until it is a real value:
+
+```bash
+openssl rand -base64 32 | tr -d '/+=' | cut -c1-32
+```
+
+Then, with the five secrets configured:
 
 ```bash
 git push origin main
@@ -350,12 +407,16 @@ creates the catalog schema and seeds the subscription plans, and the backend's
 `start_period` of 90 s covers it.
 
 To deploy by hand instead — a first run before the pipeline exists, or a
-rollback:
+rollback — copy the repository's `.env` up and add the two values the pipeline
+would otherwise inject:
 
 ```bash
+scp .env deploy/deploy.sh docker-compose.yml <user>@<host>:/opt/promoengine/
+
+ssh <user>@<host>
 cd /opt/promoengine
-cp .env.example .env && nano .env      # DOCKER_USERNAME, POSTGRES_PASSWORD at minimum
 chmod 600 .env
+printf 'DOCKER_USERNAME=%s\nIMAGE_TAG=latest\n' <dockerhub-user> >> .env
 docker login -u <dockerhub-user>
 ./deploy.sh
 ```

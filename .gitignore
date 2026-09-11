@@ -39,9 +39,17 @@ api.log
 serve.log
 
 # ---------- Secrets / local config ----------
+# The repository-root .env is COMMITTED on purpose: it carries the PostgreSQL
+# database name and password for the EC2 deployment, so that only the five
+# AWS/Docker Hub secrets have to live in GitHub. Anything added to it is
+# visible to everyone who can read this repository.
 .env
+!/.env
+
+# Every other .env stays ignored: .env.local for a developer's own overrides,
+# and .env.ci, which the pipeline generates on the runner from GitHub secrets.
 .env.*
-!.env.example
+
 appsettings.Local.json
 appsettings.*.Local.json
 
