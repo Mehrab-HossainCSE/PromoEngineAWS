@@ -134,6 +134,21 @@ Tenant connection strings are **persisted**, so a stored string must stay valid:
 > `Host=postgres`. Renaming the service breaks every tenant already provisioned
 > while new ones keep working — a confusing half-failure.
 
+> **`POSTGRES_PASSWORD` is only applied once, at `initdb`.** The PostgreSQL
+> image reads it when it initialises an *empty* data directory and ignores it
+> ever after. Change it in `.env` once the volume exists and the backend starts
+> presenting a password the server no longer accepts — an authentication
+> failure with no obvious cause. `deploy.sh` detects this case and prints the
+> fix, which is to change the password inside the database as well:
+>
+> ```bash
+> docker compose exec postgres psql -U postgres -c \
+>   "ALTER USER postgres WITH PASSWORD '<the value now in .env>';"
+> ```
+>
+> This is why the deploy script hard-stops on the placeholder password shipped
+> in `.env`: getting it right before the first deploy avoids the whole problem.
+
 > **Rotating `POSTGRES_PASSWORD` requires a catalog update.** The old password is
 > baked into every stored tenant connection string. Change the password and
 > tenant requests fail with authentication errors while the catalog itself

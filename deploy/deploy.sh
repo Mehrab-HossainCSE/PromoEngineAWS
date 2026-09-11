@@ -133,6 +133,19 @@ default_env LOG_LEVEL               "Information"
 
 [[ -n "$(read_env POSTGRES_PASSWORD)" ]] \
   || die "POSTGRES_PASSWORD is not set. It comes from the .env committed in the repository."
+
+# Refusing the shipped placeholder is worth a hard stop rather than a warning.
+# The PostgreSQL image applies POSTGRES_PASSWORD only when it initialises an
+# empty data directory; once this volume exists the password is fixed inside
+# the database. Deploying with the placeholder and correcting it later would
+# leave the backend presenting a password the server no longer accepts, which
+# surfaces as an authentication error with no obvious cause.
+if [[ "$(read_env POSTGRES_PASSWORD)" == "ChangeMe32CharAlphanumericSecret" ]]; then
+  die "POSTGRES_PASSWORD is still the placeholder shipped in the repository.
+       Set a real value in .env and push again. Generate one with:
+         openssl rand -base64 32 | tr -d '/+=' | cut -c1-32
+       Keep it alphanumeric: ';' and '=' are delimiters in a connection string."
+fi
 [[ -n "$(read_env DOCKER_USERNAME)" ]] \
   || die "DOCKER_USERNAME is not set. It comes from the GitHub secret of the same name."
 
@@ -147,8 +160,10 @@ DEPLOY_TAG="$(read_env IMAGE_TAG)"
 log "Deploying tag ${DEPLOY_TAG}"
 
 if docker volume inspect "${POSTGRES_VOLUME}" >/dev/null 2>&1; then
+  VOLUME_PREEXISTED=1
   log "PostgreSQL volume ${POSTGRES_VOLUME} exists - tenant databases will be preserved"
 else
+  VOLUME_PREEXISTED=0
   warn "PostgreSQL volume ${POSTGRES_VOLUME} does not exist yet; it will be created empty."
 fi
 
@@ -189,7 +204,25 @@ if (( healthy == 0 )); then
   warn "Health check did not pass within 180s. Recent backend logs:"
   ${COMPOSE} logs --tail 80 backend || true
   ${COMPOSE} ps || true
-  die "Deployment verification failed. The previous volume is intact; fix and re-run."
+
+  # By far the most common cause on a host that already had a database: the
+  # password in .env was changed after the volume was initialised. PostgreSQL
+  # keeps the password it was created with, so the two stop matching.
+  if (( VOLUME_PREEXISTED == 1 )) \
+     && ${COMPOSE} logs --tail 200 backend 2>/dev/null \
+        | grep -qi "password authentication failed\|28P01"; then
+    warn "The backend is being refused by PostgreSQL on password authentication."
+    warn "POSTGRES_PASSWORD applies only when the data directory is first created,"
+    warn "so changing it in .env does not change the password inside an existing"
+    warn "volume. Set the server password to match, from the host:"
+    warn ""
+    warn "  docker compose exec postgres psql -U postgres -c \\"
+    warn "    \"ALTER USER postgres WITH PASSWORD '<the value now in .env>';\""
+    warn ""
+    warn "Then rewrite the stored tenant connection strings - see DEPLOYMENT.md section 3."
+  fi
+
+  die "Deployment verification failed. The volume is intact; fix and re-run."
 fi
 
 log "Health check passed"
