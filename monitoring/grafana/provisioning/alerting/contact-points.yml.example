@@ -1,0 +1,68 @@
+# =============================================================================
+# Grafana alert notifications - OPTIONAL, and deliberately not active
+#
+# This file ends in .example, so Grafana ignores it. The alert rules in
+# rules.yml fire and show in the Alerting UI without it; this only decides where
+# a firing alert is SENT.
+#
+# It is inactive by default for one reason: a webhook URL is a credential. A
+# Slack or Teams incoming-webhook URL is enough on its own for anyone holding it
+# to post into your channel, so it must not be committed. deploy.sh renders the
+# live copy of this file on the EC2 host from an environment variable, exactly
+# the way it handles every other secret.
+#
+# -----------------------------------------------------------------------------
+# To turn notifications on
+# -----------------------------------------------------------------------------
+# 1. Create an incoming webhook in Slack, Teams, Discord or your on-call tool.
+# 2. Add its URL as a GitHub repository secret named GRAFANA_ALERT_WEBHOOK_URL
+#    (Settings -> Secrets and variables -> Actions).
+# 3. Push. deploy.sh writes contact-points.yml on the host from that secret and
+#    restarts Grafana. If the secret is later removed, deploy.sh deletes the
+#    rendered file again, and Grafana goes back to firing alerts without
+#    sending them.
+#
+# Nothing about this file needs editing to do that. It is here so you can see
+# the shape of what gets generated, and so you can change the shape if you want
+# something other than a plain webhook.
+# =============================================================================
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: promoengine-webhook
+    receivers:
+      - uid: promoengine-webhook
+        type: webhook
+        # $GRAFANA_ALERT_WEBHOOK_URL is expanded by Grafana from the container's
+        # environment when it reads this file, so the URL itself never appears on
+        # disk in the repository.
+        settings:
+          url: $GRAFANA_ALERT_WEBHOOK_URL
+          httpMethod: POST
+        # Send one message when a set of alerts starts firing and one when it
+        # resolves. Without the resolved message, a channel fills with problems
+        # and never records that any of them ended.
+        disableResolveMessage: false
+
+# -----------------------------------------------------------------------------
+# The routing tree. One policy here, which sends everything to the contact point
+# above. The timings are the part worth understanding:
+#
+#   group_wait      - wait this long after the first alert in a group before
+#                     sending, so three alerts from one incident arrive as one
+#                     message instead of three.
+#   group_interval  - minimum gap before sending an UPDATE about a group that is
+#                     already firing.
+#   repeat_interval - how often to re-send an alert nobody has acted on. Four
+#                     hours is a deliberate compromise: short enough not to be
+#                     forgotten, long enough not to become noise.
+# -----------------------------------------------------------------------------
+policies:
+  - orgId: 1
+    receiver: promoengine-webhook
+    group_by: [alertname, component]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

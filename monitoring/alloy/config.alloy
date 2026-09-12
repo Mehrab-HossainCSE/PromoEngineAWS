@@ -1,0 +1,156 @@
+// =============================================================================
+// Grafana Alloy - Docker log collection
+//
+// Alloy replaces Promtail. It reads container logs directly from the Docker
+// daemon rather than tailing /var/lib/docker/containers/*.log, which means it
+// gets the container's identity and Compose labels from the API instead of
+// having to parse them out of a file path.
+//
+// The flow, top to bottom:
+//
+//   discovery.docker    ask the daemon "which containers exist?"
+//        |
+//   discovery.relabel   turn Docker metadata into the labels we want to keep
+//        |
+//   loki.source.docker  stream each container's stdout/stderr
+//        |
+//   loki.process        attach a couple of static labels
+//        |
+//   loki.write          push to Loki
+//
+// Alloy needs the Docker socket read-only to do this. That is a real privilege -
+// read access to the socket exposes every container's configuration, including
+// environment variables - which is why Alloy is not published to the host and
+// is the only service besides cAdvisor given the socket at all.
+// =============================================================================
+
+logging {
+  // Alloy's own logs. Keep this at warn: Alloy logs to stdout, Alloy collects
+  // stdout, so info level produces a slow feedback loop of Alloy describing
+  // itself to Loki.
+  level  = "warn"
+  format = "logfmt"
+}
+
+// -----------------------------------------------------------------------------
+// 1. Discover containers
+//
+// Re-asks the daemon every 15s, so a container started by a deploy is picked up
+// without restarting Alloy. This is why `docker compose up -d` needs no
+// monitoring-side action: the new backend container is discovered automatically.
+// -----------------------------------------------------------------------------
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "15s"
+}
+
+// -----------------------------------------------------------------------------
+// 2. Choose the labels
+//
+// This block is the single most important thing in the file. Every label kept
+// here becomes part of a Loki stream key. Four labels with a handful of values
+// each is cheap; adding anything request-scoped would not be.
+//
+// Docker metadata arrives with __meta_ prefixes. Anything not explicitly copied
+// to a real label is discarded before the logs are shipped.
+// -----------------------------------------------------------------------------
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Docker reports names with a leading slash: "/promoengine-backend".
+  // The capture group strips it.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // The Compose service name - backend, frontend, postgres, grafana...
+  // This is the label to group by in dashboards: it stays stable even if the
+  // container is recreated under a different name.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  // "promoengine" for both the application and the monitoring overlay, since the
+  // overlay shares the project name. Distinguishes these logs from anything else
+  // running on the host.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+
+  // stdout or stderr. Worth keeping: a great many programs write nothing to
+  // stderr until something is wrong.
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+
+  // Drop containers that opt out with a label, so a future noisy sidecar can be
+  // excluded without editing this file:
+  //   labels: { "promoengine.logs": "false" }
+  rule {
+    source_labels = ["__meta_docker_container_label_promoengine_logs"]
+    regex         = "false"
+    action        = "drop"
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 3. Stream the logs
+//
+// loki.source.docker follows each discovered container's log stream over the
+// Docker API, remembering its position in Alloy's storage volume so a restart
+// does not re-ship everything already in Loki.
+// -----------------------------------------------------------------------------
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  forward_to       = [loki.process.containers.receiver]
+  refresh_interval = "15s"
+}
+
+// -----------------------------------------------------------------------------
+// 4. Add environment labels
+//
+// Static labels only. No parsing stage: PromoEngine's containers emit several
+// different log formats (ASP.NET Core text, Nginx combined, PostgreSQL), and a
+// regex that fits one would silently mangle the others. Loki 3.x derives a
+// `detected_level` label on its own, which covers the common case of filtering
+// for errors.
+// -----------------------------------------------------------------------------
+loki.process "containers" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.static_labels {
+    values = {
+      environment = coalesce(sys.env("MONITORING_ENVIRONMENT"), "production"),
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. Push to Loki
+//
+// `loki` is the Compose service name on the monitoring network. If this endpoint
+// is unreachable Alloy buffers in memory and retries with backoff, so a Loki
+// restart loses at most a short window rather than the whole stream.
+// -----------------------------------------------------------------------------
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+
+    // Batch rather than push per line. Loki is far happier with fewer, larger
+    // requests, and this bounds the request rate regardless of log volume.
+    batch_wait = "1s"
+    batch_size = "1MiB"
+  }
+
+  // Applied to every stream from this Alloy instance. `host` answers "which EC2
+  // instance produced this?" the day there is more than one.
+  external_labels = {
+    host = coalesce(sys.env("MONITORING_HOSTNAME"), "ec2"),
+  }
+}

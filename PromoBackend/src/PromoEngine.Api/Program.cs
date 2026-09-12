@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using PromoEngine.Api.Endpoints;
 using PromoEngine.Api.Middleware;
+using PromoEngine.Api.Observability;
 using PromoEngine.Api.Services;
 using PromoEngine.Infrastructure.Catalog;
 using PromoEngine.Infrastructure.Provisioning;
@@ -122,6 +123,14 @@ builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
+// ---------------------------------------------------------------------------
+// Observability
+//
+// Collects the request and runtime meters ASP.NET Core already publishes and
+// exposes them for Prometheus. See Observability/MetricsExtensions.cs.
+// ---------------------------------------------------------------------------
+builder.Services.AddPromoEngineMetrics(builder.Configuration);
+
 var app = builder.Build();
 
 // ---------------------------------------------------------------------------
@@ -158,6 +167,10 @@ app.MapGet("/health", () => Results.Ok(new
 }))
 .WithTags("Diagnostics")
 .AllowAnonymous();
+
+// Prometheus scrape target. Internal to the Docker network: the frontend Nginx
+// server does not proxy this path, so it is not reachable from the internet.
+app.MapPromoEngineMetrics();
 
 // Create the catalog database and seed the subscription plans on start up.
 await CatalogSeeder.SeedAsync(app.Services);

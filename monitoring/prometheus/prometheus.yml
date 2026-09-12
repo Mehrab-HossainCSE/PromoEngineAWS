@@ -1,0 +1,152 @@
+# =============================================================================
+# Prometheus - scrape configuration
+#
+# Prometheus PULLS. Nothing pushes metrics to it. Every job below is a list of
+# addresses Prometheus opens an HTTP connection to, on a timer, and reads a
+# text document of numbers from.
+#
+# All targets are Compose service names, resolved by Docker's embedded DNS.
+# None of them is published to the host, so this entire scrape graph lives
+# inside the Docker network and needs no security-group rule.
+#
+#   backend:8080/metrics   <- the application  (promoengine network)
+#   node-exporter:9100     <- the EC2 host     (monitoring network)
+#   cadvisor:8080          <- every container  (monitoring network)
+#   loki / alloy / grafana <- the stack watching itself
+# =============================================================================
+
+global:
+  # How often every target is read. 15s is the usual balance: fine enough to see
+  # a spike, coarse enough that storage stays small. Going to 5s roughly triples
+  # disk use for the same retention.
+  scrape_interval: 15s
+  # How often alert rules are evaluated. Matching scrape_interval means a rule
+  # never re-reads the same sample twice.
+  evaluation_interval: 15s
+  # A scrape that takes longer than this is abandoned and the target counts as
+  # down. Must stay below scrape_interval or scrapes would overlap.
+  scrape_timeout: 10s
+
+  # Stamped onto every series leaving this server. Useful the day a second
+  # environment appears and both feed one Grafana.
+  external_labels:
+    monitor: promoengine
+    environment: production
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # Prometheus itself. The first thing to check when data looks wrong: if this
+  # job is healthy, Prometheus is fine and the problem is the target.
+  # ---------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus
+          component: monitoring
+
+  # ---------------------------------------------------------------------------
+  # The application. This is the job that matters.
+  #
+  # `backend` is the Compose service name of the .NET API. Prometheus reaches it
+  # because it is attached to the promoengine network as well as the monitoring
+  # one - see docker-compose.monitoring.yml.
+  #
+  # /metrics is served by OpenTelemetry inside the API (Observability/
+  # MetricsExtensions.cs). It carries http_server_request_duration_seconds,
+  # http_server_active_requests, and the dotnet_* runtime meters.
+  # ---------------------------------------------------------------------------
+  - job_name: promoengine-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8080"]
+        labels:
+          service: backend
+          component: api
+
+  # ---------------------------------------------------------------------------
+  # The EC2 host: CPU, memory, disk, filesystem, network, load.
+  #
+  # node-exporter reads /proc and /sys from the host, mounted read-only into the
+  # container. These are the numbers that tell you the instance is too small,
+  # which cAdvisor cannot tell you because it only sees containers.
+  # ---------------------------------------------------------------------------
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: ec2-host
+          component: infrastructure
+
+  # ---------------------------------------------------------------------------
+  # Per-container CPU, memory, network and restart counts.
+  #
+  # cAdvisor is by far the noisiest source in this stack: it publishes a series
+  # per container per cgroup metric, and several families nobody ever queries.
+  # The metric_relabel_configs below drop the worst offenders AFTER the scrape
+  # but BEFORE storage, which is what keeps Prometheus inside a sane footprint
+  # on a small instance.
+  # ---------------------------------------------------------------------------
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          service: docker
+          component: infrastructure
+
+    metric_relabel_configs:
+      # Per-CPU-core breakdowns, per-filesystem-device tables and the block-IO
+      # matrices multiply the series count without changing any decision we make
+      # from this dashboard.
+      - source_labels: [__name__]
+        regex: "container_cpu_(load_average_10s|system_seconds_total|user_seconds_total|schedstat_.*)"
+        action: drop
+      - source_labels: [__name__]
+        regex: "container_(blkio_device_usage_total|fs_(io_current|io_time_.*|sector_.*|reads_merged_total|writes_merged_total)|tasks_state)"
+        action: drop
+      - source_labels: [__name__]
+        regex: "container_memory_(mapped_file|swap|failures_total)"
+        action: drop
+      # cAdvisor reports the root cgroup as a container with no name. It is the
+      # whole host, which node-exporter already covers, and it doubles every
+      # "top container by memory" panel.
+      #
+      # Matching on BOTH labels rather than on an empty `name` alone is
+      # deliberate. Prometheus joins source_labels with ";", so this regex means
+      # "name begins with container_ AND the name label is empty". Dropping on
+      # the empty name by itself would also take out machine_cpu_cores,
+      # machine_memory_bytes and cadvisor's own version metric, none of which
+      # have a name label - a filter that quietly removes more than it says is
+      # how a panel ends up empty for reasons nobody can find.
+      - source_labels: [__name__, name]
+        regex: "container_.*;"
+        action: drop
+
+  # ---------------------------------------------------------------------------
+  # The monitoring stack watching itself.
+  #
+  # This is not vanity. If Loki stops ingesting, the logs dashboard goes quiet -
+  # and a quiet dashboard looks exactly like a quiet application. These jobs are
+  # what let the "monitoring target down" alert tell the difference.
+  # ---------------------------------------------------------------------------
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+        labels:
+          service: loki
+          component: monitoring
+
+  - job_name: alloy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["alloy:12345"]
+        labels:
+          service: alloy
+          component: monitoring
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+        labels:
+          service: grafana
+          component: monitoring

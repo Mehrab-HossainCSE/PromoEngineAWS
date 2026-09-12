@@ -1,0 +1,50 @@
+# =============================================================================
+# Grafana data sources - provisioned as code
+#
+# Grafana reads this file at start up. Data sources created this way cannot be
+# edited in the UI, which is the point: the configuration lives in git, and a
+# rebuilt instance comes back identical instead of needing someone to remember
+# what they clicked.
+#
+# The `uid` values are fixed strings rather than generated ones. Every dashboard
+# JSON in monitoring/grafana/dashboards/ refers to these exact uids, so they must
+# not change - a renamed uid turns every panel into "Datasource not found".
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  # ---------------------------------------------------------------------------
+  # Metrics. `prometheus` is the Compose service name on the monitoring network;
+  # 9090 is not published to the host, so this URL only resolves from inside.
+  # ---------------------------------------------------------------------------
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy            # Grafana's backend fetches, not the browser.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Lets Grafana pick sensible step sizes and refuse to ask for resolution
+      # that does not exist.
+      timeInterval: 15s
+      httpMethod: POST
+      prometheusType: Prometheus
+      prometheusVersion: 3.13.3
+      # Makes the "Explore metrics" and exemplar features behave.
+      manageAlerts: false
+
+  # ---------------------------------------------------------------------------
+  # Logs. The derived field below turns Loki into a jumping-off point: a log line
+  # tagged with a container name links straight to the container dashboard.
+  # ---------------------------------------------------------------------------
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      timeout: 60
+      maxLines: 1000

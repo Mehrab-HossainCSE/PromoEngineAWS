@@ -31,6 +31,17 @@
 #                       on the postgres container and Password= in BOTH the
 #                       catalog and the tenant-provisioning connection strings.
 #
+# Two further secrets are OPTIONAL, and only concern the monitoring stack. The
+# deployment works without either one:
+#
+#   GRAFANA_ADMIN_PASSWORD    - the Grafana login. If absent, deploy.sh generates
+#                               a random one on the host on first deploy and
+#                               preserves it afterwards. Read it back with
+#                               `sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env`.
+#   GRAFANA_ALERT_WEBHOOK_URL - a Slack/Teams/on-call incoming webhook. If absent,
+#                               alerts still fire and show in Grafana; they are
+#                               simply not sent anywhere.
+#
 # The two files are copied separately and merged by deploy.sh, secrets last, so
 # a secret always wins over a committed value. No secret is ever echoed: GitHub
 # masks them in the log, and the file travels over the encrypted SSH channel.
@@ -107,13 +118,155 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
 
   # ---------------------------------------------------------------------------
+  # Check the monitoring configuration before any of it reaches the host.
+  #
+  # These files are consumed by six containers that each fail in their own way,
+  # and several of those failures are quiet - Prometheus refuses to start on a
+  # bad scrape config, but Grafana logs a provisioning error and carries on
+  # serving empty dashboards. Thirty seconds here is worth more than reading
+  # container logs over SSH afterwards.
+  #
+  # Runs in parallel with the image builds and gates the deploy, so a typo in a
+  # dashboard cannot reach production.
+  # ---------------------------------------------------------------------------
+  validate-monitoring:
+    name: Validate monitoring configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # promtool is the Prometheus project's own checker: it parses the scrape
+      # config exactly as the server would, so a pass here means the server will
+      # start. Pinned to the same version as the deployed image.
+      - name: Check the Prometheus configuration
+        run: |
+          docker run --rm --entrypoint /bin/promtool \
+            -v "${PWD}/monitoring/prometheus:/cfg:ro" \
+            prom/prometheus:v3.13.3-busybox check config /cfg/prometheus.yml
+
+      # Alloy's own linter. Its configuration language is not YAML, so nothing
+      # else can validate it - and a syntax error there means no logs at all,
+      # with the application looking perfectly healthy.
+      - name: Check the Alloy configuration
+        run: |
+          docker run --rm --entrypoint /bin/alloy \
+            -v "${PWD}/monitoring/alloy:/cfg:ro" \
+            grafana/alloy:v1.19.2 fmt /cfg/config.alloy > /dev/null
+
+      # Loki has no offline validator, so the check is structural: valid YAML
+      # with the handful of sections whose absence silently changes behaviour.
+      # retention without a compactor is the classic one - it deletes nothing,
+      # and the disk fills anyway.
+      - name: Check the Loki and Grafana configuration
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          import yaml
+
+          errors = []
+
+          loki = yaml.safe_load(pathlib.Path("monitoring/loki/loki-config.yml").read_text())
+          for section in ("schema_config", "storage_config", "limits_config", "compactor"):
+              if section not in loki:
+                  errors.append(f"loki-config.yml is missing the {section} section")
+          if loki.get("compactor", {}).get("retention_enabled") is not True:
+              errors.append("loki-config.yml sets a retention period but no compactor to enforce it")
+
+          # Every dashboard must be valid JSON, carry a stable uid, and point
+          # only at data sources that are actually provisioned.
+          provisioned = set()
+          ds = yaml.safe_load(pathlib.Path(
+              "monitoring/grafana/provisioning/datasources/datasources.yml").read_text())
+          for entry in ds.get("datasources", []):
+              provisioned.add(entry["uid"])
+
+          uids = {}
+          for path in sorted(pathlib.Path("monitoring/grafana/dashboards").glob("*.json")):
+              try:
+                  board = json.loads(path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  errors.append(f"{path}: invalid JSON - {exc}")
+                  continue
+              if not board.get("uid"):
+                  errors.append(f"{path}: no uid, so a redeploy would duplicate it")
+              if board["uid"] in uids:
+                  errors.append(f"{path}: uid collides with {uids[board['uid']]}")
+              uids[board["uid"]] = path
+              for panel in board.get("panels", []):
+                  for target in panel.get("targets", []):
+                      uid = target.get("datasource", {}).get("uid")
+                      if uid and uid not in provisioned:
+                          errors.append(
+                              f"{path}: panel '{panel.get('title')}' uses "
+                              f"datasource '{uid}', which is not provisioned")
+
+          # Alert rules: the condition must name a refId the rule actually has,
+          # which is the one mistake that provisions cleanly and then never fires.
+          rules = yaml.safe_load(pathlib.Path(
+              "monitoring/grafana/provisioning/alerting/rules.yml").read_text())
+          seen = set()
+          count = 0
+          for group in rules.get("groups", []):
+              for rule in group.get("rules", []):
+                  count += 1
+                  refs = {q["refId"] for q in rule["data"]}
+                  if rule["condition"] not in refs:
+                      errors.append(f"{rule['uid']}: condition '{rule['condition']}' is not one of {sorted(refs)}")
+                  if rule["uid"] in seen:
+                      errors.append(f"{rule['uid']}: duplicate alert uid")
+                  seen.add(rule["uid"])
+                  for query in rule["data"]:
+                      if query["datasourceUid"] not in provisioned | {"__expr__"}:
+                          errors.append(f"{rule['uid']}: unknown datasource {query['datasourceUid']}")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+
+          print(f"{len(uids)} dashboards, {count} alert rules, "
+                f"datasources {sorted(provisioned)} - all consistent")
+          PY
+
+      # The two files have to merge into one valid project. This catches the
+      # class of mistake that only appears when both are passed together - a
+      # network declared twice with conflicting settings, a service name reused,
+      # a variable referenced but never defined.
+      - name: Check the merged Compose project
+        run: |
+          # Placeholder values only: `config` interpolates variables, and the
+          # point of this step is the structure, not the secrets. Nothing here
+          # reaches the host.
+          cat > .env.validate <<'ENV'
+          POSTGRES_PASSWORD=validation-only
+          POSTGRES_DB=validation-only
+          DOCKER_USERNAME=validation-only
+          JWT_SIGNING_KEY=validation-only
+          EXTERNAL_API_KEY=validation-only
+          GRAFANA_ADMIN_PASSWORD=validation-only
+          ENV
+
+          docker compose --env-file .env.validate --env-file .env \
+            -f docker-compose.yml -f docker-compose.monitoring.yml \
+            config --quiet
+
+          echo "Services in the merged project:"
+          docker compose --env-file .env.validate --env-file .env \
+            -f docker-compose.yml -f docker-compose.monitoring.yml \
+            config --services | sed 's/^/  /'
+
+          rm -f .env.validate
+
+  # ---------------------------------------------------------------------------
   # Deploy to EC2. Only runs once both images are in the registry, so the host
   # never pulls a half-published release.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy to AWS EC2
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, validate-monitoring]
 
     steps:
       - name: Checkout repository
@@ -185,6 +338,8 @@ jobs:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          GRAFANA_ALERT_WEBHOOK_URL: ${{ secrets.GRAFANA_ALERT_WEBHOOK_URL }}
         run: |
           umask 077
           {
@@ -193,6 +348,12 @@ jobs:
             echo "PUBLIC_ORIGIN=http://${AWS_HOST}"
             echo "POSTGRES_DB=${POSTGRES_DB}"
             echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+
+            # Both optional. deploy.sh skips empty values when merging, so an
+            # unset secret leaves whatever the host already has - which for the
+            # Grafana password is the one generated on the first deploy.
+            echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
+            echo "GRAFANA_ALERT_WEBHOOK_URL=${GRAFANA_ALERT_WEBHOOK_URL}"
           } > env.ci
           echo "Wrote the secret overlay with $(wc -l < env.ci) settings."
 
@@ -421,7 +582,20 @@ jobs:
 
           scp -i ~/.ssh/deploy_key \
             docker-compose.yml \
+            docker-compose.monitoring.yml \
             deploy/deploy.sh \
+            "$AWS_USER@$AWS_HOST:/opt/promoengine/"
+
+          # The monitoring tree: Prometheus scrape config, Loki config, the Alloy
+          # pipeline, and Grafana's provisioning plus dashboards. All of it is
+          # bind-mounted read-only into the containers, so this directory is the
+          # live configuration - not a copy of it.
+          #
+          # -r to recurse. The rendered contact-points.yml, if the host has one,
+          # is NOT in the repository and so is not overwritten by this: scp adds
+          # and replaces, it does not mirror.
+          scp -r -i ~/.ssh/deploy_key \
+            monitoring \
             "$AWS_USER@$AWS_HOST:/opt/promoengine/"
 
           # The repository's configuration file and the secret overlay are sent
@@ -464,6 +638,36 @@ jobs:
           docker logout
           REMOTE
 
+      # deploy.sh verifies the monitoring pipeline but never fails on it - a
+      # broken dashboard is not a reason to roll back a working application. It
+      # leaves a marker file instead, and this step turns that into a build
+      # annotation so the problem is visible without being fatal.
+      - name: Report monitoring status
+        if: always()
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          status=$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$AWS_USER@$AWS_HOST" \
+            'cat /opt/promoengine/.monitoring-status 2>/dev/null || echo ok') || status=unknown
+
+          case "$status" in
+            ok)
+              echo "Monitoring verified: metrics and logs are both reaching Grafana."
+              ;;
+            degraded)
+              echo "::warning::The application deployed successfully, but the monitoring stack is degraded."
+              echo "  Metrics or logs are not reaching Grafana. The application is unaffected."
+              echo "  On the host:"
+              echo "    cd /opt/promoengine"
+              echo "    docker compose -f docker-compose.yml -f docker-compose.monitoring.yml ps"
+              echo "    docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs --tail 50 alloy prometheus"
+              ;;
+            *)
+              echo "::notice::Could not read the monitoring status from the host."
+              ;;
+          esac
+
       # Independent confirmation from outside the host: if this passes, the
       # security group, Nginx, the API and PostgreSQL are all working together.
       - name: Verify deployment from the internet
@@ -489,6 +693,7 @@ jobs:
         if: success()
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
         run: |
           {
             echo "### PromoEngine deployed"
@@ -500,4 +705,21 @@ jobs:
             echo "| URL | http://${AWS_HOST} |"
             echo ""
             echo "Tenant databases were preserved: the PostgreSQL volume \`promoengine-postgres-data\` is never removed by this pipeline."
+            echo ""
+            echo "#### Monitoring"
+            echo ""
+            echo "Grafana is published on the instance's loopback interface only, so it is not"
+            echo "reachable from the internet. Open it through an SSH tunnel:"
+            echo ""
+            echo '```'
+            echo "ssh -i <your-key>.pem -L 3000:localhost:3000 ${AWS_USER}@${AWS_HOST}"
+            echo '```'
+            echo ""
+            echo "Then browse to <http://localhost:3000>. Dashboards: EC2 Host, Docker Containers,"
+            echo "Backend API, Logs. The admin password is generated on the host unless the"
+            echo "\`GRAFANA_ADMIN_PASSWORD\` secret is set:"
+            echo ""
+            echo '```'
+            echo "sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

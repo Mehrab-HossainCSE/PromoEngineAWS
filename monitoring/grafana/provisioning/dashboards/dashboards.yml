@@ -1,0 +1,29 @@
+# =============================================================================
+# Grafana dashboard provider
+#
+# Points Grafana at a directory of dashboard JSON files and tells it to keep
+# watching. Dashboards loaded this way are read-only in the UI: the file in git
+# is the source of truth, so a dashboard cannot be silently "fixed" by someone
+# dragging a panel and then lost when the container is recreated.
+#
+# To change one: edit it in the UI, use the share/export "Export for sharing
+# externally = off" JSON, and commit that back over the file here.
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: promoengine
+    orgId: 1
+    folder: PromoEngine
+    type: file
+    # If true, deleting the JSON file deletes the dashboard. That keeps the
+    # directory and Grafana in step rather than accumulating orphans.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      # Reproduces the directory layout as folders. One folder here, but it
+      # keeps the door open.
+      foldersFromFilesStructure: false

@@ -1,0 +1,512 @@
+# =============================================================================
+# Grafana unified alerting - rules as code
+#
+# Why Grafana alerting rather than Prometheus rule files plus Alertmanager:
+# Grafana already embeds an Alertmanager, so this stack needs no eighth
+# container; the rules can span BOTH data sources (the last group below alerts
+# on a Loki query, which a Prometheus rule file cannot do); and alert state
+# appears in the same UI as the dashboards.
+#
+# Every rule has the same shape:
+#   refId A  - the query, evaluated instantly
+#   refId C  - a threshold expression over A; this is the `condition`
+#
+# `for:` is the field people skip and then regret. It is how long the condition
+# must hold CONTINUOUSLY before the alert fires. Without it, one slow scrape
+# pages you at 3am. Each value below is chosen against how long the real problem
+# would take to matter.
+#
+# Notification routing is separate and optional - see contact-points.yml.example.
+# Rules fire and show in the UI whether or not anywhere is configured to send
+# them, so this file is safe on its own.
+# =============================================================================
+
+apiVersion: 1
+
+groups:
+  # ===========================================================================
+  # The EC2 host itself. node-exporter is the source for all of these.
+  # ===========================================================================
+  - orgId: 1
+    name: host
+    folder: PromoEngine Alerts
+    interval: 1m
+    rules:
+      - uid: promo-host-cpu
+        title: EC2 host CPU is saturated
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "Host CPU above 85% for 10 minutes"
+          description: >-
+            CPU on the EC2 instance has been above 85% for ten minutes. Check the
+            Docker Containers dashboard to see which container is responsible. A
+            sustained level here with no matching traffic spike usually means a
+            runaway query or a crash loop burning CPU on restarts.
+        labels:
+          severity: warning
+          component: host
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # 100 minus idle time = busy time. Averaged across every core, so this
+          # is "the whole instance", not one hot core.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-host-memory
+        title: EC2 host memory is nearly exhausted
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "Host memory above 85% for 10 minutes"
+          description: >-
+            Available memory on the instance is below 15%. The kernel OOM killer
+            picks a victim on its own once memory runs out, and it does not choose
+            politely - PostgreSQL is usually the largest process on the box.
+            Either lower the monitoring stack's memory limits or move to a larger
+            instance type.
+        labels:
+          severity: warning
+          component: host
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # MemAvailable, not MemFree. Free memory is nearly always small and
+          # alarming-looking on Linux because the kernel spends the rest on page
+          # cache; MemAvailable is what a new process could actually obtain.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-host-disk
+        title: EC2 root disk is filling up
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "Root filesystem above 85% used"
+          description: >-
+            A full root volume stops PostgreSQL writing, which takes every tenant
+            down at once. The usual culprits are images from old deploys and Loki
+            chunks. Reclaim with `docker image prune -a --filter until=168h`, and
+            check retention_period in monitoring/loki/loki-config.yml.
+            Never prune volumes.
+        labels:
+          severity: critical
+          component: host
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # Only the real root filesystem. tmpfs and the overlay mounts Docker
+          # creates per container would otherwise each produce their own series
+          # and their own alert.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: >-
+                (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}
+                / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})) * 100
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+  # ===========================================================================
+  # Containers. cAdvisor is the source.
+  # ===========================================================================
+  - orgId: 1
+    name: containers
+    folder: PromoEngine Alerts
+    interval: 1m
+    rules:
+      - uid: promo-container-restarts
+        title: A container is restarting repeatedly
+        condition: C
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: "{{ $labels.name }} has restarted more than twice in 15 minutes"
+          description: >-
+            A crash loop. `restart: unless-stopped` keeps bringing the container
+            back, so the stack looks alive while it is actually failing on start
+            up. Read the reason with `docker compose logs --tail 100 <service>`,
+            or open the Logs dashboard and filter to this container.
+        labels:
+          severity: critical
+          component: container
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # `changes()` counts how many times the start time changed - that is,
+          # how many times the container was replaced. The threshold is 2 rather
+          # than 0 on purpose: a deploy legitimately restarts every application
+          # container exactly once, and paging on a successful deploy is the
+          # fastest way to teach people to ignore alerts.
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: 'sum by (name) (changes(container_start_time_seconds{name=~".+"}[15m]))'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [2] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-container-memory
+        title: A container is close to its memory limit
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "{{ $labels.name }} is using over 90% of its memory limit"
+          description: >-
+            Docker kills a container that crosses its limit, with exit code 137
+            and nothing in the application log to explain it. Either raise the
+            limit in docker-compose.monitoring.yml or find out what is growing.
+        labels:
+          severity: warning
+          component: container
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # Only containers that HAVE a limit. Without the `> 0` filter, every
+          # unlimited container divides by zero and reports +Inf, which is above
+          # any threshold and would alert on everything at once.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: >-
+                (container_memory_working_set_bytes{name=~".+"}
+                / (container_spec_memory_limit_bytes{name=~".+"} > 0)) * 100
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [90] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+  # ===========================================================================
+  # The application. These come from the API's own /metrics endpoint.
+  # ===========================================================================
+  - orgId: 1
+    name: backend
+    folder: PromoEngine Alerts
+    interval: 1m
+    rules:
+      - uid: promo-backend-down
+        title: Backend API is not being scraped
+        condition: C
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: "Prometheus cannot reach the backend /metrics endpoint"
+          description: >-
+            Either the API is down, or it is up but not serving metrics. Check
+            `docker compose ps` and `docker compose logs --tail 100 backend`.
+            This fires briefly during a normal deploy while the container is
+            recreated, which is why `for` is 2 minutes and not 30 seconds.
+        labels:
+          severity: critical
+          component: api
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          # `up` is synthesised by Prometheus itself for every target: 1 if the
+          # last scrape succeeded, 0 if it failed. It exists even when the target
+          # publishes nothing at all, which is exactly why it is the right signal
+          # for "is it there".
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: 'up{job="promoengine-backend"}'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-backend-5xx
+        title: Backend is returning server errors
+        condition: C
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: "Over 5% of API responses are 5xx"
+          description: >-
+            A ratio, not a count, so it means the same thing at ten requests a
+            minute and at ten thousand. Open the Backend API dashboard and look at
+            the status-code panel to find the route, then the Logs dashboard
+            filtered to the backend container for the exception itself.
+        labels:
+          severity: critical
+          component: api
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # The _count series of the duration histogram doubles as the request
+          # counter, so error rate comes from the same metric as latency - one
+          # fewer thing that can disagree with itself.
+          #
+          # clamp_min on the denominator keeps a completely idle period from
+          # dividing by zero and reporting NaN.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: >-
+                (sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+                / clamp_min(sum(rate(http_server_request_duration_seconds_count[5m])), 0.001)) * 100
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [5] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-backend-latency
+        title: Backend p95 latency is high
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "p95 request latency above 1.5s for 10 minutes"
+          description: >-
+            The 95th percentile, so one request in twenty is slower than this.
+            Excel exports and tenant provisioning are legitimately slow; if the
+            Backend API dashboard shows the latency spread across ordinary read
+            routes instead, look at PostgreSQL connection saturation first.
+        labels:
+          severity: warning
+          component: api
+        noDataState: NoData
+        execErrState: Error
+        data:
+          # histogram_quantile over the _bucket series. `sum by (le)` is not
+          # optional: the quantile has to be computed over merged buckets, and
+          # dropping every other label is what merges them.
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: >-
+                histogram_quantile(0.95,
+                sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: gt, params: [1.5] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+  # ===========================================================================
+  # The monitoring stack watching itself.
+  #
+  # Without this group, a broken collector is indistinguishable from a quiet
+  # system: empty dashboards and no alerts look identical to "everything is
+  # fine". These two rules are what make silence trustworthy.
+  # ===========================================================================
+  - orgId: 1
+    name: monitoring
+    folder: PromoEngine Alerts
+    interval: 1m
+    rules:
+      - uid: promo-monitoring-target-down
+        title: A monitoring target is down
+        condition: C
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is unreachable"
+          description: >-
+            One of node-exporter, cAdvisor, Loki, Alloy or Grafana is not
+            answering. Whatever it collects is missing from the dashboards for as
+            long as this is firing. Check with `docker compose -f
+            docker-compose.yml -f docker-compose.monitoring.yml ps` on the host.
+        labels:
+          severity: warning
+          component: monitoring
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              range: false
+              expr: 'up{job=~"node-exporter|cadvisor|loki|alloy|grafana"}'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      - uid: promo-logs-not-arriving
+        title: No container logs are reaching Loki
+        condition: C
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: "Loki received no log lines in the last 5 minutes"
+          description: >-
+            The Alloy to Loki half of the pipeline has stopped. Note this is a
+            Loki query, not a Prometheus one: it tests the data path end to end
+            rather than whether a process is running, so it catches the case where
+            Alloy is up and healthy but shipping nothing. Check
+            `docker compose logs alloy` for push errors.
+        labels:
+          severity: warning
+          component: monitoring
+        # NoData means the query returned no series at all, which for a count
+        # across the whole project IS the symptom. Alerting on NoData is correct
+        # here and would be wrong for almost any other rule.
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: loki
+            model:
+              refId: A
+              editorMode: code
+              queryType: instant
+              expr: 'sum(count_over_time({project=~".+"}[5m]))'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource: { type: __expr__, uid: __expr__ }
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { type: last, params: [] }
+                  type: query

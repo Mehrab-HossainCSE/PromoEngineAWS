@@ -11,6 +11,16 @@
 # The one rule this script exists to enforce: the PostgreSQL volume is never
 # touched. It uses `up -d` (which recreates only changed containers) and prunes
 # images, never volumes. `down -v` appears nowhere.
+#
+# Since the monitoring stack was added there are two compose files. The second
+# is an overlay applied on top of the first, and whether it is applied at all is
+# decided by MONITORING_ENABLED in .env:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml ...
+#
+# Everything below goes through the `compose` wrapper function so that the two
+# can never drift apart - in particular so that `up -d --remove-orphans` is never
+# run with only one of them, which would delete the other's containers.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -24,7 +34,14 @@ ENV_FROM_REPO="${APP_DIR}/env.repo"
 ENV_FROM_CI="${APP_DIR}/env.ci"
 
 COMPOSE_FILE="${APP_DIR}/docker-compose.yml"
+MONITORING_COMPOSE_FILE="${APP_DIR}/docker-compose.monitoring.yml"
+MONITORING_DIR="${APP_DIR}/monitoring"
 POSTGRES_VOLUME="promoengine-postgres-data"
+
+# Services in each file, listed explicitly so `pull` can name them and so a typo
+# in a service name fails here rather than half way through a deployment.
+APP_SERVICES=(postgres backend frontend)
+MONITORING_SERVICES=(prometheus grafana loki alloy node-exporter cadvisor)
 
 cd "${APP_DIR}"
 
@@ -133,6 +150,52 @@ default_env TENANT_SEED_SAMPLE_DATA "true"
 default_env HTTP_PORT               "80"
 default_env LOG_LEVEL               "Information"
 
+# -- monitoring -------------------------------------------------------------
+# Defaults here rather than only in the repository's .env, so a host that was
+# deployed before monitoring existed picks up sane values on its next deploy
+# instead of failing on an unset variable.
+default_env MONITORING_ENABLED         "true"
+default_env GRAFANA_BIND_ADDRESS       "127.0.0.1"
+default_env GRAFANA_PORT               "3000"
+default_env GRAFANA_ADMIN_USER         "admin"
+default_env GRAFANA_COOKIE_SECURE      "false"
+default_env GRAFANA_LOG_LEVEL          "warn"
+default_env PROMETHEUS_RETENTION_TIME  "15d"
+default_env PROMETHEUS_RETENTION_SIZE  "4GB"
+default_env PROMETHEUS_MEM_LIMIT       "512m"
+default_env GRAFANA_MEM_LIMIT          "384m"
+default_env LOKI_MEM_LIMIT             "384m"
+default_env ALLOY_MEM_LIMIT            "256m"
+default_env NODE_EXPORTER_MEM_LIMIT    "128m"
+default_env CADVISOR_MEM_LIMIT         "256m"
+default_env MONITORING_ENVIRONMENT     "production"
+default_env MONITORING_HOSTNAME        "$(hostname -s 2>/dev/null || echo ec2)"
+
+# Grafana can read every metric and every log line in the stack, so it gets a
+# real password. Generated here on first deploy and preserved afterwards, exactly
+# like JWT_SIGNING_KEY - regenerating it on every push would lock you out of your
+# own dashboards on every push. Setting a GRAFANA_ADMIN_PASSWORD GitHub secret
+# overrides it, because env.ci is merged before this runs.
+#
+# Note that Grafana, like PostgreSQL, only reads this the FIRST time: the admin
+# password afterwards lives in Grafana's own database inside the grafana-data
+# volume. Changing it later needs `grafana-cli admin reset-admin-password`.
+ensure_generated GRAFANA_ADMIN_PASSWORD
+
+# Where Grafana believes it is reachable. Only used for the links inside alert
+# notifications, but a wrong value there sends people to a dead URL during an
+# incident, which is the worst possible moment.
+if [[ -z "$(read_env GRAFANA_ROOT_URL)" ]]; then
+  grafana_port="$(read_env GRAFANA_PORT)"
+  if [[ "$(read_env GRAFANA_BIND_ADDRESS)" == "127.0.0.1" ]]; then
+    # Loopback-only: the only way anyone reaches it is an SSH tunnel, so the
+    # URL that works for them is localhost.
+    upsert_env GRAFANA_ROOT_URL "http://localhost:${grafana_port}"
+  else
+    upsert_env GRAFANA_ROOT_URL "$(read_env PUBLIC_ORIGIN):${grafana_port}"
+  fi
+fi
+
 # These three arrive from GitHub secrets. The pipeline already refuses to reach
 # this host with any of them empty, so this is the guard for a hand-run deploy.
 [[ -n "$(read_env POSTGRES_PASSWORD)" ]] \
@@ -141,6 +204,59 @@ default_env LOG_LEVEL               "Information"
   || die "POSTGRES_DB is not set. It comes from the GitHub secret of the same name."
 [[ -n "$(read_env DOCKER_USERNAME)" ]] \
   || die "DOCKER_USERNAME is not set. It comes from the GitHub secret of the same name."
+
+# -----------------------------------------------------------------------------
+# 1b. Decide whether the monitoring overlay is part of this deployment
+#
+# Both compose files are passed to every single docker compose invocation below,
+# through the `compose` wrapper. That matters most for `up -d --remove-orphans`:
+# run with only the application file, --remove-orphans would consider the six
+# monitoring containers orphans of this project and delete them.
+#
+# Which is exactly the behaviour that makes MONITORING_ENABLED=false work. Turn
+# it off, deploy, and the monitoring containers are removed on the next `up`.
+# Their VOLUMES are left alone, so turning it back on restores the history.
+# -----------------------------------------------------------------------------
+COMPOSE_ARGS=(-f "${COMPOSE_FILE}")
+MONITORING_ON=0
+
+if [[ "$(read_env MONITORING_ENABLED)" == "true" ]]; then
+  if [[ -f "${MONITORING_COMPOSE_FILE}" && -d "${MONITORING_DIR}" ]]; then
+    COMPOSE_ARGS+=(-f "${MONITORING_COMPOSE_FILE}")
+    MONITORING_ON=1
+  else
+    warn "MONITORING_ENABLED=true but ${MONITORING_COMPOSE_FILE} or ${MONITORING_DIR} is missing."
+    warn "Deploying the application without monitoring. The pipeline copies both;"
+    warn "if you are running this by hand, copy them across too."
+  fi
+fi
+
+# Every docker compose call in this script goes through here.
+compose() { ${COMPOSE} "${COMPOSE_ARGS[@]}" "$@"; }
+
+# -- optional alert notifications -------------------------------------------
+# A Slack/Teams webhook URL is a credential and is never committed. If the
+# secret is set, render the provisioning file on the host; if it is not, remove
+# any previously rendered copy so that clearing the secret really does turn
+# notifications off. Alert RULES are unaffected either way - they fire and show
+# in Grafana regardless of whether anywhere is configured to receive them.
+CONTACT_POINTS="${MONITORING_DIR}/grafana/provisioning/alerting/contact-points.yml"
+if (( MONITORING_ON == 1 )); then
+  if [[ -n "$(read_env GRAFANA_ALERT_WEBHOOK_URL)" ]]; then
+    if [[ -f "${CONTACT_POINTS}.example" ]]; then
+      # The file keeps the literal $GRAFANA_ALERT_WEBHOOK_URL placeholder:
+      # Grafana expands it from the container's environment at read time, so the
+      # URL itself never lands on disk here.
+      grep -v '^#' "${CONTACT_POINTS}.example" > "${CONTACT_POINTS}"
+      chmod 640 "${CONTACT_POINTS}"
+      log "Alert notifications enabled (webhook URL supplied by secret)"
+    fi
+  elif [[ -f "${CONTACT_POINTS}" ]]; then
+    rm -f "${CONTACT_POINTS}"
+    warn "GRAFANA_ALERT_WEBHOOK_URL is no longer set; removed the rendered contact point."
+    warn "Alert rules still evaluate and show in Grafana, but nothing is notified."
+  fi
+fi
 
 # -----------------------------------------------------------------------------
 # 2. Report what is about to run
@@ -168,10 +284,28 @@ fi
 # deploy does not interrupt in-flight tenant provisioning.
 # -----------------------------------------------------------------------------
 log "Pulling images"
-${COMPOSE} pull --quiet backend frontend postgres
+PULL_SERVICES=("${APP_SERVICES[@]}")
+if (( MONITORING_ON == 1 )); then
+  PULL_SERVICES+=("${MONITORING_SERVICES[@]}")
+  log "Monitoring overlay is enabled - ${#MONITORING_SERVICES[@]} extra services"
+else
+  log "Monitoring overlay is disabled (MONITORING_ENABLED != true)"
+fi
+
+# A pull failure on a monitoring image must not stop the application deploying,
+# so those are pulled separately and only warned about. The application images
+# are still mandatory.
+compose pull --quiet "${APP_SERVICES[@]}"
+
+if (( MONITORING_ON == 1 )); then
+  if ! compose pull --quiet "${MONITORING_SERVICES[@]}"; then
+    warn "One or more monitoring images could not be pulled."
+    warn "Continuing: whatever is already on this host will be used instead."
+  fi
+fi
 
 log "Starting stack"
-${COMPOSE} up -d --remove-orphans
+compose up -d --remove-orphans
 
 # -----------------------------------------------------------------------------
 # 4. Verify
@@ -195,14 +329,14 @@ done
 
 if (( healthy == 0 )); then
   warn "Health check did not pass within 180s. Recent backend logs:"
-  ${COMPOSE} logs --tail 80 backend || true
-  ${COMPOSE} ps || true
+  compose logs --tail 80 backend || true
+  compose ps || true
 
   # By far the most common cause on a host that already had a database: the
   # password in .env was changed after the volume was initialised. PostgreSQL
   # keeps the password it was created with, so the two stop matching.
   if (( VOLUME_PREEXISTED == 1 )) \
-     && ${COMPOSE} logs --tail 200 backend 2>/dev/null \
+     && compose logs --tail 200 backend 2>/dev/null \
         | grep -qi "password authentication failed\|28P01"; then
     warn "The backend is being refused by PostgreSQL on password authentication."
     warn "POSTGRES_PASSWORD applies only when the data directory is first created,"
@@ -222,6 +356,98 @@ log "Health check passed"
 curl --silent "${HEALTH_URL}"; echo
 
 # -----------------------------------------------------------------------------
+# 4b. Verify the observability pipeline end to end
+#
+# Three questions, all asked from inside the Prometheus container:
+#   1. Is Grafana serving?
+#   2. Does Prometheus consider the backend target up - i.e. did metrics arrive?
+#   3. Has Loki actually received log lines - i.e. is Alloy shipping?
+#
+# NONE of this can fail the deployment. A broken dashboard is not a reason to
+# roll back a working application, and a monitoring stack that can take
+# production down is worse than no monitoring at all. Failures here print a
+# warning and set MONITORING_DEGRADED, which the GitHub Actions workflow turns
+# into a build annotation so it is visible without being fatal.
+# -----------------------------------------------------------------------------
+MONITORING_DEGRADED=0
+
+if (( MONITORING_ON == 1 )); then
+  log "Verifying the monitoring stack"
+
+  # Every HTTP probe below runs from inside the PROMETHEUS container, not from
+  # the container being tested. Two reasons, both practical:
+  #
+  #   1. It is the one image in this stack certain to carry an HTTP client - the
+  #      -busybox tag was chosen for exactly that. Several of the others are
+  #      distroless or minimal, and a probe that cannot run looks identical to a
+  #      probe that failed.
+  #   2. Reaching grafana:3000 and loki:3100 by service name also proves the
+  #      monitoring network resolves, which testing each container against its
+  #      own localhost would not.
+  #
+  # -T because an SSH-driven deploy has no TTY.
+  probe() { compose exec -T prometheus wget -qO- --timeout=5 "$1" 2>/dev/null; }
+
+  # Waits up to `timeout` seconds for a command to succeed AND for its output to
+  # match a pattern. Retrying is not optional here: Prometheus needs a scrape
+  # interval to pass before any target is up, and Loki's ingester takes a while
+  # to join its own ring after a restart.
+  wait_for() {
+    local label="$1" timeout="$2" pattern="$3"; shift 3
+    local deadline=$(( SECONDS + timeout )) output=""
+    while (( SECONDS < deadline )); do
+      if output="$("$@" 2>/dev/null)" && [[ "${output}" == *"${pattern}"* ]]; then
+        printf '  [ ok ] %s\n' "${label}"
+        return 0
+      fi
+      sleep 5
+    done
+    printf '\033[1;33m  [warn] %s\033[0m\n' "${label}"
+    MONITORING_DEGRADED=1
+    return 1
+  }
+
+  # 1. Grafana is serving. wget already fails on a non-2xx response, and an
+  #    unhealthy Grafana answers /api/health with 503, so reaching this at all
+  #    means the store behind users, dashboards and alert state opened.
+  wait_for "Grafana is serving" 120 'database' \
+    probe 'http://grafana:3000/api/health' \
+    || warn "Grafana did not answer /api/health. Try: compose logs grafana"
+
+  # 2. Metrics. `up == 1` for the backend job is the single best proof that the
+  #    application is exporting metrics AND that Prometheus can route to it
+  #    across the promoengine network. An empty result set contains no "value"
+  #    key at all, which is what makes this a meaningful pattern rather than a
+  #    test that Prometheus merely answered.
+  wait_for "Prometheus is scraping the backend" 150 '"value"' \
+    probe 'http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22promoengine-backend%22%7D%3D%3D1' \
+    || warn "Prometheus has no healthy backend target. Check that the API image includes /metrics."
+
+  # 3. Logs. Asking Loki which values it has seen for the `service` label proves
+  #    the whole Docker -> Alloy -> Loki path, not merely that Loki is running.
+  #    Looking for "backend" specifically, because Loki answering with an empty
+  #    list is exactly the failure this is meant to catch.
+  wait_for "Loki has received container logs" 150 'backend' \
+    probe 'http://loki:3100/loki/api/v1/label/service/values' \
+    || warn "Loki has no logs labelled with a backend service yet. Check: compose logs alloy"
+
+  if (( MONITORING_DEGRADED == 1 )); then
+    warn ""
+    warn "The application deployed successfully; only monitoring is degraded."
+    warn "Inspect with:"
+    warn "  cd ${APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.monitoring.yml ps"
+  else
+    log "Monitoring verified: metrics and logs are both reaching Grafana"
+    printf '  Grafana: %s (user %s)\n' "$(read_env GRAFANA_ROOT_URL)" "$(read_env GRAFANA_ADMIN_USER)"
+    if [[ "$(read_env GRAFANA_BIND_ADDRESS)" == "127.0.0.1" ]]; then
+      printf '  Bound to loopback. Reach it with:\n'
+      printf '    ssh -i <key>.pem -L %s:localhost:%s %s@<this-host>\n' \
+        "$(read_env GRAFANA_PORT)" "$(read_env GRAFANA_PORT)" "$(id -un)"
+    fi
+  fi
+fi
+
+# -----------------------------------------------------------------------------
 # 5. Reclaim disk
 #
 # Only dangling images - layers no longer referenced by any tag. Volumes are
@@ -232,4 +458,13 @@ docker image prune --force --filter "until=24h" || true
 docker container prune --force --filter "until=24h" || true
 
 log "Deployment complete"
-${COMPOSE} ps
+compose ps
+
+# Exit 0 either way: the application is up, which is what this script promises.
+# The marker file is how the workflow reports degraded monitoring as a warning
+# annotation rather than a failed build.
+if (( MONITORING_DEGRADED == 1 )); then
+  printf 'degraded\n' > "${APP_DIR}/.monitoring-status"
+else
+  rm -f "${APP_DIR}/.monitoring-status"
+fi

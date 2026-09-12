@@ -134,6 +134,16 @@ services:
 
       Logging__LogLevel__Default: ${LOG_LEVEL:-Information}
 
+      # -- observability ----------------------------------------------------
+      # Turns the /metrics endpoint on. Set METRICS_ENABLED=false in .env to
+      # switch it off without rebuilding the image - the endpoint and the
+      # exporter are gated by the same key, so they cannot disagree.
+      Metrics__Enabled: ${METRICS_ENABLED:-true}
+      # The deployed commit SHA, reported as a label on the `target_info`
+      # metric. That is what lets a Grafana panel answer "is the commit I just
+      # pushed the one actually running?" without anyone logging in to look.
+      Metrics__ServiceVersion: ${IMAGE_TAG:-unknown}
+
     # Not published to the host: the API is reachable only through the frontend
     # proxy, so port 8080 never needs a security-group rule.
     expose:

@@ -21,6 +21,9 @@ developer machine creates it on the PostgreSQL container in production.
 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Build → push → deploy on every push to `main` |
 | [deploy/ec2-setup.sh](deploy/ec2-setup.sh) | One-time EC2 host preparation |
 | [deploy/deploy.sh](deploy/deploy.sh) | Server-side deploy: pull, restart, verify, prune |
+| [docker-compose.monitoring.yml](docker-compose.monitoring.yml) | Monitoring overlay: Prometheus, Grafana, Loki, Alloy, Node Exporter, cAdvisor |
+| [monitoring/](monitoring/) | Scrape config, Loki config, Alloy pipeline, Grafana provisioning and dashboards |
+| [MONITORING.md](MONITORING.md) | **Observability guide** — architecture, dashboards, alerts, validation |
 
 One existing file was modified, and it was a build-configuration fix rather than
 a logic change:
@@ -33,6 +36,12 @@ container itself, so the application could never have reached the API. The
 production build now correctly substitutes `environment.production.ts`, whose
 `apiUrl` is `''` — making every call in `ApiService` a same-origin
 `/api/...` request that Nginx proxies to the backend.
+
+**[PromoBackend/src/PromoEngine.Api/Program.cs](PromoBackend/src/PromoEngine.Api/Program.cs)**
+— two lines were added to register a Prometheus exporter and map `/metrics`. The
+numbers it serves come from meters ASP.NET Core and the .NET runtime already
+publish; no application code is instrumented and no request path is altered. See
+[MONITORING.md](MONITORING.md).
 
 ---
 
@@ -514,7 +523,43 @@ per image.
 
 ---
 
-## 8. Production recommendations
+## 8. Monitoring and observability
+
+Metrics, logs, dashboards and alerts are deployed as an overlay on this stack —
+`docker-compose.monitoring.yml` plus the `monitoring/` directory. The
+application's containers, its database volume and its multi-tenant behaviour are
+untouched, and the whole thing switches off with `MONITORING_ENABLED=false`.
+
+```
+  backend /metrics ──┐
+  node-exporter ─────┼──► Prometheus ──► Grafana
+  cadvisor ──────────┘                      ▲
+  Docker logs ──► Alloy ──► Loki ───────────┘
+```
+
+Four dashboards (EC2 Host, Docker Containers, Backend API, Logs) and ten alert
+rules, all provisioned from files in git rather than configured by clicking.
+
+Grafana is the only published port and binds `127.0.0.1` by default, so reach it
+through an SSH tunnel:
+
+```bash
+ssh -i your-key.pem -L 3000:localhost:3000 ubuntu@<ec2-public-ip>
+# then open http://localhost:3000  (user: admin)
+sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env   # the generated password
+```
+
+**One prerequisite:** the monitoring stack needs roughly 700–900 MB on top of the
+application's ~500 MB, so the instance must have at least 2 GB of RAM. A
+`t2.micro`/`t3.micro` cannot run it.
+
+Full detail — architecture, every metric, every alert threshold and why it was
+chosen, validation commands and troubleshooting — is in
+**[MONITORING.md](MONITORING.md)**.
+
+---
+
+## 9. Production recommendations
 
 **Do these before taking real traffic:**
 
@@ -550,8 +595,11 @@ per image.
    `listen 8080`, and map `80:8080`. (The backend already runs as non-root.)
 8. **Move off Docker Hub's rate limits** to Amazon ECR, and give the EC2
    instance an IAM role so no registry password is stored on the host at all.
-9. **Cap container resources.** One runaway tenant query should not be able to
-   starve the other containers — add `deploy.resources.limits` per service.
+9. **Cap container resources** on the application services. The six monitoring
+   containers now each carry a `mem_limit` (see
+   [docker-compose.monitoring.yml](docker-compose.monitoring.yml)); the three
+   application containers still do not. One runaway tenant query should not be
+   able to starve the others.
 10. **Reconsider `Tenancy__AutoSyncSchemaOnStartup` as tenant count grows.** It
     sweeps every tenant database on boot, which is right for tens of tenants and
     wrong for thousands. The code already anticipates this — set it to `false`

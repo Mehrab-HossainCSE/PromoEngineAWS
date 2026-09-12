@@ -1,0 +1,439 @@
+# =============================================================================
+# PromoEngine - monitoring and observability overlay
+#
+# This is an OVERLAY, not a replacement. It is applied on top of the application
+# stack and never edits it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Running it that way is what makes the whole thing safe. The application's three
+# services are defined in one file and monitored by another, so monitoring can be
+# turned off entirely - set MONITORING_ENABLED=false in .env - without touching a
+# line of the deployment that serves customers.
+#
+#   Backend /metrics ---+
+#   Node Exporter ------+--> Prometheus --> Grafana
+#   cAdvisor -----------+                     ^
+#                                             |
+#   Docker logs --> Alloy --> Loki -----------+
+#
+# Nothing here is published to the host except Grafana, and Grafana defaults to
+# binding 127.0.0.1 - reachable over an SSH tunnel, invisible from the internet.
+# See GRAFANA_BIND_ADDRESS below.
+#
+# Memory limits are set on every service. This stack costs roughly 700-900 MB at
+# rest, which is most of a 2 GB instance. The limits exist so that if something
+# here grows unexpectedly, Docker kills the monitoring container rather than
+# leaving the kernel's OOM killer to pick a victim - and the kernel's usual
+# choice is PostgreSQL.
+# =============================================================================
+
+name: promoengine
+
+services:
+  # ===========================================================================
+  # Prometheus - the metrics database.
+  #
+  # It PULLS. Nothing pushes to it. Every target is listed in
+  # monitoring/prometheus/prometheus.yml, and all of them are Compose service
+  # names on a private network.
+  # ===========================================================================
+  prometheus:
+    # -busybox rather than the bare tag: the default Prometheus 3.x image is
+    # distroless and has no shell, so the healthcheck below would have nothing
+    # to run. Pinned to a patch version, never :latest - an image that silently
+    # changes under a running deployment is not a deployment you can reason about.
+    image: prom/prometheus:v3.13.3-busybox
+    container_name: promoengine-prometheus
+    restart: unless-stopped
+
+    user: "65534:65534"   # nobody. Matches the ownership of /prometheus in the image.
+
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # How long metrics are kept. 15 days on a small root volume is a
+      # deliberate trade: long enough for week-over-week comparison, short
+      # enough that Prometheus can never be the reason the disk fills.
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      # A hard ceiling as well as a time limit. Whichever is hit first wins, so
+      # an unexpected burst of series cannot outgrow the disk before the time
+      # limit would have expired it.
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-4GB}
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      # Lets `docker compose kill -s SIGHUP prometheus` reload the scrape config
+      # without dropping the database and losing the in-memory head block.
+      - --web.enable-lifecycle
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+    # Deliberately not published. Prometheus has no authentication of any kind:
+    # anyone who can reach 9090 can read every metric and, with --web.enable-
+    # lifecycle, restart it. Grafana queries it over the private network instead.
+    expose:
+      - "9090"
+
+    networks:
+      # Its own network, for Grafana to query it on.
+      - monitoring
+      # AND the application network, which is the only reason Prometheus can
+      # resolve `backend` to scrape /metrics. This is the single join between the
+      # two halves of the stack.
+      - promoengine
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-512m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===========================================================================
+  # Grafana - the only thing anyone looks at.
+  #
+  # Dashboards, data sources and alert rules are all provisioned from files in
+  # monitoring/grafana/provisioning. Nothing is configured by clicking, so a
+  # destroyed Grafana comes back identical.
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:13.2.1
+    container_name: promoengine-grafana
+    restart: unless-stopped
+
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    environment:
+      # -- credentials ------------------------------------------------------
+      # Never hard-coded. deploy.sh generates a random password on the host the
+      # first time and preserves it afterwards, so a redeploy does not change
+      # the login. Override it by adding a GRAFANA_ADMIN_PASSWORD GitHub secret.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD - deploy.sh generates one if you do not}
+
+      # -- who can get in ---------------------------------------------------
+      # No anonymous access, no self-service sign-up. Grafana can query every
+      # metric and log line in the stack, so it is not a read-only curiosity.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_THEME: dark
+
+      # -- cookies ----------------------------------------------------------
+      # There is no TLS in front of this instance yet. A Secure cookie would
+      # never be sent over plain HTTP and the login would silently loop, so this
+      # stays false until a certificate exists - at which point set it to true.
+      GF_SECURITY_COOKIE_SECURE: ${GRAFANA_COOKIE_SECURE:-false}
+      GF_SECURITY_COOKIE_SAMESITE: lax
+      GF_SECURITY_CONTENT_TYPE_PROTECTION: "true"
+      GF_SECURITY_X_CONTENT_TYPE_OPTIONS: "true"
+      GF_SECURITY_STRICT_TRANSPORT_SECURITY: "false"
+
+      # Where Grafana thinks it lives. Used in alert notification links and
+      # redirect URLs; wrong here means "view alert" links that go nowhere.
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+
+      # -- provisioning -----------------------------------------------------
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      # Unified alerting. The embedded Alertmanager is what makes a separate
+      # Alertmanager container unnecessary.
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+
+      # Expanded inside contact-points.yml when deploy.sh has rendered it from
+      # the GRAFANA_ALERT_WEBHOOK_URL secret. Empty is fine: no file is rendered,
+      # so nothing reads this.
+      GRAFANA_ALERT_WEBHOOK_URL: ${GRAFANA_ALERT_WEBHOOK_URL:-}
+
+      # -- housekeeping -----------------------------------------------------
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-warn}
+      # Installing plugins at runtime would mean an outbound fetch on every
+      # start, and a Grafana that fails to boot when grafana.com is unreachable.
+      GF_INSTALL_PLUGINS: ""
+
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+    ports:
+      # THE ONLY PUBLISHED PORT IN THIS FILE, and it binds 127.0.0.1 by default.
+      #
+      # That means Grafana is reachable on the instance itself and through an SSH
+      # tunnel, and not from the internet:
+      #
+      #   ssh -i key.pem -L 3000:localhost:3000 ubuntu@<ec2-ip>
+      #   then open http://localhost:3000
+      #
+      # This is the right default while the host has no TLS: published on
+      # 0.0.0.0, every Grafana login would cross the internet in clear text.
+      # To expose it anyway, set GRAFANA_BIND_ADDRESS=0.0.0.0 in .env AND open
+      # the port in the security group - ideally only to your own IP.
+      - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+
+    networks:
+      - monitoring
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+    mem_limit: ${GRAFANA_MEM_LIMIT:-384m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===========================================================================
+  # Loki - the log database.
+  #
+  # Indexes labels, not log text. That is the whole reason this fits on one small
+  # instance where an Elasticsearch would not.
+  # ===========================================================================
+  loki:
+    image: grafana/loki:3.7.7
+    container_name: promoengine-loki
+    restart: unless-stopped
+
+    user: "10001:10001"   # the `loki` user, which owns /loki inside the image
+
+    command: -config.file=/etc/loki/loki-config.yml
+
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+
+    expose:
+      - "3100"
+
+    networks:
+      - monitoring
+
+    # No healthcheck. The Loki image's base is minimal and carrying no HTTP
+    # client is a real possibility; a healthcheck whose command does not exist
+    # marks a perfectly healthy container unhealthy forever, and anything
+    # waiting on it never starts. Prometheus scrapes loki:3100 instead, and the
+    # "monitoring target down" alert reports it - a better check anyway, since
+    # it tests reachability from outside rather than from inside.
+
+    mem_limit: ${LOKI_MEM_LIMIT:-384m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===========================================================================
+  # Grafana Alloy - the log collector.
+  #
+  # Reads container logs from the Docker API rather than tailing files, so it
+  # gets each container's Compose labels from the daemon instead of parsing them
+  # out of a path.
+  # ===========================================================================
+  alloy:
+    image: grafana/alloy:v1.19.2
+    container_name: promoengine-alloy
+    restart: unless-stopped
+
+    depends_on:
+      # service_started, not service_healthy: Loki has no healthcheck (see
+      # above). Alloy buffers and retries with backoff if Loki is not accepting
+      # pushes yet, so starting slightly early costs nothing.
+      loki:
+        condition: service_started
+
+    # Read access to the Docker socket is a real privilege: it exposes every
+    # container's configuration, environment variables included. Alloy needs it
+    # to read logs, so the mount is :ro and Alloy is not published to the host.
+    # This is the security cost of collecting logs this way, stated plainly.
+    user: root
+
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+
+    environment:
+      # Read by config.alloy through sys.env(). Labels every log line with the
+      # environment and the host, which matters the day there is a second one.
+      MONITORING_ENVIRONMENT: ${MONITORING_ENVIRONMENT:-production}
+      MONITORING_HOSTNAME: ${MONITORING_HOSTNAME:-ec2}
+
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Read positions. Without this volume Alloy would re-ship every container's
+      # entire log history on each restart, duplicating everything in Loki.
+      - alloy-data:/var/lib/alloy/data
+
+    expose:
+      - "12345"
+
+    networks:
+      - monitoring
+
+    # No healthcheck: the Alloy image is Ubuntu-based and ships neither curl nor
+    # wget, so any CMD here would fail permanently and mark a healthy container
+    # unhealthy. Prometheus scrapes alloy:12345 instead, and the "monitoring
+    # target down" alert covers it - which is a better check anyway, because it
+    # tests reachability from outside the container rather than from inside it.
+
+    mem_limit: ${ALLOY_MEM_LIMIT:-256m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===========================================================================
+  # Node Exporter - the EC2 host's own metrics.
+  #
+  # Reads /proc and /sys from the host, mounted read-only. These are the numbers
+  # that say "this instance is too small", which cAdvisor cannot tell you because
+  # it only ever sees containers.
+  # ===========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: promoengine-node-exporter
+    restart: unless-stopped
+
+    # Host PID namespace, so the exporter sees the host's processes rather than
+    # the one process inside its own container.
+    pid: host
+
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      # Without this, every container's overlay mount appears as its own
+      # filesystem - dozens of near-duplicate series, and a "disk nearly full"
+      # panel that is impossible to read.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/kubelet/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+
+    volumes:
+      # rslave propagation, so mounts created on the host after this container
+      # starts still become visible to it.
+      - /:/host:ro,rslave
+
+    expose:
+      - "9100"
+
+    networks:
+      - monitoring
+
+    # No healthcheck: this image is distroless and has no shell. Prometheus
+    # scraping it is the liveness check, and the "monitoring target down" alert
+    # is how you find out it stopped.
+
+    mem_limit: ${NODE_EXPORTER_MEM_LIMIT:-128m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+  # ===========================================================================
+  # cAdvisor - per-container CPU, memory, network and restarts.
+  # ===========================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    container_name: promoengine-cadvisor
+    restart: unless-stopped
+
+    # cAdvisor reads cgroup accounting for every container on the host. On
+    # cgroup v2 - Ubuntu 22.04 and newer, Amazon Linux 2023 - it cannot read all
+    # of it unprivileged, and reports partial or empty stats instead of failing
+    # loudly. This is the most privileged container in the stack; it is also the
+    # only way to get these numbers without running an agent on the host itself.
+    privileged: true
+
+    devices:
+      - /dev/kmsg:/dev/kmsg
+
+    command:
+      # Only Docker. Without this cAdvisor also tries containerd, rkt and mesos
+      # and logs a connection failure for each one, every few seconds, forever.
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      # Disable the metric families Prometheus is configured to drop anyway.
+      # Cheaper to never collect them than to collect and discard.
+      - --disable_metrics=percpu,sched,tcp,udp,advtcp,process,hugetlb,referenced_memory,cpu_topology,resctrl
+      - --store_container_labels=false
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+    expose:
+      - "8080"
+
+    networks:
+      - monitoring
+
+    # No healthcheck: the image has no shell. Covered by the Prometheus scrape
+    # and the "monitoring target down" alert, as above.
+
+    mem_limit: ${CADVISOR_MEM_LIMIT:-256m}
+
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+# =============================================================================
+networks:
+  # New, private, and used only by the monitoring services.
+  monitoring:
+    name: promoengine-monitoring
+    driver: bridge
+
+  # `promoengine` is NOT redeclared here, on purpose.
+  #
+  # This file is only ever applied on top of docker-compose.yml, which already
+  # defines that network. Compose merges the two `networks:` blocks, so a second
+  # definition here could only ever conflict with the first - and a conflicting
+  # network definition makes Compose recreate the network, which disconnects the
+  # running application containers to do it.
+  #
+  # Prometheus still joins it (see its `networks:` list above); it just resolves
+  # from the base file. The practical consequence is that this overlay cannot be
+  # used on its own, which is correct: there is nothing to monitor without it.
+
+volumes:
+  # Metrics. Losing this volume loses history, not configuration: dashboards and
+  # alert rules are files in git, so a rebuilt stack comes back complete apart
+  # from the numbers themselves.
+  prometheus-data:
+    name: promoengine-prometheus-data
+    driver: local
+
+  # Grafana's own database: users, sessions, alert state, silences. Dashboards
+  # and data sources are provisioned from files and do NOT live here.
+  grafana-data:
+    name: promoengine-grafana-data
+    driver: local
+
+  # Log chunks and the label index.
+  loki-data:
+    name: promoengine-loki-data
+    driver: local
+
+  # Alloy's read positions - how far through each container's log it has got.
+  alloy-data:
+    name: promoengine-alloy-data
+    driver: local

@@ -20,6 +20,15 @@ Dockerfile      text eol=lf
 *.yml           text eol=lf
 *.yaml          text eol=lf
 
+# Grafana Alloy's configuration language is not YAML and has its own extension.
+# It is bind-mounted into the Alloy container and parsed there.
+*.alloy         text eol=lf
+
+# The alert contact-point template. deploy.sh filters it on the EC2 host and
+# writes the result where Grafana reads it, so a CR would travel into the
+# generated YAML.
+*.example       text eol=lf
+
 # Copied to the EC2 host and parsed there by deploy.sh. The parser strips a
 # trailing CR defensively, but the file has no reason to carry one.
 .env            text eol=lf

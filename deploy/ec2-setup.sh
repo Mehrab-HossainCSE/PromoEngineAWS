@@ -18,6 +18,12 @@
 # packages needs root, and the pipeline cannot answer a password prompt.
 #
 # Supports Amazon Linux 2023 and Ubuntu 22.04/24.04.
+#
+# SIZING: with the monitoring stack enabled the instance needs at least 2 GB of
+# RAM (the application is roughly 500 MB, monitoring another 700-900 MB). A
+# t2.micro or t3.micro will not fit. This script reports the host's memory at
+# the end so the mismatch is visible before the first deploy rather than as an
+# OOM kill afterwards.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -172,10 +178,13 @@ cat <<SUMMARY
   Deployment directory : ${APP_DIR}
   PostgreSQL volume    : ${POSTGRES_VOLUME}
   Docker network       : ${DOCKER_NETWORK}
+  Memory on this host  : $(free -m 2>/dev/null | awk '/^Mem:/{print $2" MB"}' || echo unknown)
 
   Next:
     1. Security group inbound: 22 from your IP, 80 from 0.0.0.0/0.
        Do NOT open 5432 - PostgreSQL is reachable only inside the Docker network.
+       Nothing extra is needed for monitoring: Grafana binds 127.0.0.1 and is
+       reached over an SSH tunnel. See MONITORING.md.
     2. Add the repository secrets, then push to main. The pipeline copies
        docker-compose.yml and deploy.sh here and starts the stack.
     3. Watch the first deploy with:

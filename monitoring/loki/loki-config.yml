@@ -1,0 +1,117 @@
+# =============================================================================
+# Loki - single-binary configuration
+#
+# Loki is not Elasticsearch. It does NOT index the text of your logs; it indexes
+# only the labels (service, container, stream) and stores the log lines
+# themselves as compressed chunks. That is why it runs happily on one small EC2
+# instance where an ELK stack would not fit.
+#
+# The practical consequence: keep the label set small and fixed. A label whose
+# value varies per request - a request id, a tenant id, a user email - creates a
+# new "stream" per value and is the one way to make Loki fall over. The Alloy
+# configuration deliberately attaches only container/service/project/stream.
+#
+# Everything is stored on the local filesystem, inside the named volume mounted
+# at /loki. There is no S3 and no second node: this is one instance, so one
+# replica is the honest setting.
+# =============================================================================
+
+# No multi-tenancy. Loki's own tenant header (X-Scope-OrgID) is unrelated to
+# PromoEngine's tenants - it would only matter if separate teams shared this
+# Loki. Off means every push and query uses the single tenant "fake".
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  # Loki at info level narrates every flush and compaction. On a box this size
+  # that is pure noise, and Alloy would dutifully ship it back into Loki.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  # One instance, so one copy. Anything higher makes Loki wait for acknowledgements
+  # from replicas that do not exist, and every write fails.
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+# The storage format. v13 + tsdb is the current scheme; older schemas (v11/boltdb)
+# are still accepted but lose structured metadata and are slower to query.
+#
+# `from` is a schema BOUNDARY, not a start date: data written before it uses the
+# previous schema. Never edit this date on a running system - set a NEW entry
+# with a future date if the schema ever has to change.
+schema_config:
+  configs:
+    - from: 2024-04-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  # Guard rails. Without them a single misbehaving container can fill the disk.
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  # A container that is crash-looping and printing a stack trace per millisecond
+  # is capped here rather than allowed to evict everyone else's logs.
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 10MB
+
+  # Refuse logs with timestamps older than this. Protects the index from a
+  # container whose clock is wrong, which would otherwise force Loki to rewrite
+  # old chunks on every push.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+  # Retention. 14 days on a small root volume is a deliberate trade: long enough
+  # to investigate last week's incident, short enough that logs never fill the
+  # disk out from under PostgreSQL. Raise it only after checking `df -h`.
+  retention_period: 336h
+
+  # Lets Grafana's Logs panel show the per-label volume bars.
+  volume_enabled: true
+
+  max_query_series: 5000
+  max_entries_limit_per_query: 10000
+
+# Retention is only ENFORCED if the compactor runs with retention_enabled.
+# Setting limits_config.retention_period alone deletes nothing - a classic and
+# expensive Loki misconfiguration, because the disk fills anyway.
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  retention_enabled: true
+  retention_delete_delay: 2h
+  compaction_interval: 10m
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: true
+
+# Do not phone home with usage statistics.
+analytics:
+  reporting_enabled: false
