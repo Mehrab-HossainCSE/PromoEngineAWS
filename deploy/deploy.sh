@@ -106,6 +106,16 @@ ensure_generated() {
 # lines are skipped, and so is any key with an empty value - an empty value
 # means "not configured", and blanking what the host already has would break a
 # running deployment rather than leave it alone.
+# Keys that arrived from the repository .env or the pipeline ON THIS RUN.
+#
+# Needed because .env on the host is cumulative: a value deploy.sh derived last
+# time is indistinguishable, by the time it is read back, from one an operator
+# set deliberately. This list is how a derived value can be recomputed every
+# deploy while still yielding to an explicit choice.
+DELIVERED_KEYS=" "
+
+was_delivered() { [[ "${DELIVERED_KEYS}" == *" $1 "* ]]; }
+
 merge_env_file() {
   local source_file="$1" line key value
   [[ -f "${source_file}" ]] || return 0
@@ -118,6 +128,7 @@ merge_env_file() {
     value="${line#*=}"
     [[ -z "${value}" ]] && continue
     upsert_env "${key}" "${value}"
+    DELIVERED_KEYS="${DELIVERED_KEYS}${key} "
   done < "${source_file}"
 
   rm -f "${source_file}"
@@ -185,7 +196,15 @@ ensure_generated GRAFANA_ADMIN_PASSWORD
 # Where Grafana believes it is reachable. Only used for the links inside alert
 # notifications, but a wrong value there sends people to a dead URL during an
 # incident, which is the worst possible moment.
-if [[ -z "$(read_env GRAFANA_ROOT_URL)" ]]; then
+#
+# Derived on EVERY deploy, not just when unset. GRAFANA_BIND_ADDRESS can change
+# between deploys, and a root URL left over from when Grafana was on loopback
+# would keep pointing at localhost after it moved to the public interface - a
+# stale value that nothing would ever correct.
+#
+# An explicit GRAFANA_ROOT_URL in the repository .env, or as a secret, still
+# wins: was_delivered says whether it arrived this run.
+if ! was_delivered GRAFANA_ROOT_URL; then
   grafana_port="$(read_env GRAFANA_PORT)"
   if [[ "$(read_env GRAFANA_BIND_ADDRESS)" == "127.0.0.1" ]]; then
     # Loopback-only: the only way anyone reaches it is an SSH tunnel, so the
