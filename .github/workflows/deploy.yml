@@ -115,7 +115,20 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/${{ matrix.image }}:latest
             ${{ secrets.DOCKER_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+          # ignore-error=true is not optional here, it is the point.
+          #
+          # A layer cache is an optimisation. It must never be able to fail a
+          # build, and without this flag it can: GitHub caps the Actions cache at
+          # 10 GB per repository and evicts least-recently-used entries when you
+          # cross it. mode=max exports every intermediate stage - for the backend
+          # that means the .NET SDK build layers, which are large - so an export
+          # can have blobs evicted out from under it while it is still running.
+          # BuildKit then reports "error writing layer blob: not_found" and the
+          # whole job fails, after the image has already been built and pushed.
+          #
+          # With this flag a cache export failure is a warning: the next build is
+          # slower, and nothing else changes.
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max,ignore-error=true
 
   # ---------------------------------------------------------------------------
   # Check the monitoring configuration before any of it reaches the host.
