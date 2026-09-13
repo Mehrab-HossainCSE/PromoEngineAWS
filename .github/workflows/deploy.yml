@@ -336,8 +336,37 @@ jobs:
 
           # Trust on first use. To pin instead, store the output of
           # `ssh-keyscan <host>` as a secret and write it here.
-          ssh-keyscan -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          #
+          # Retried, because an instance that was just started or rebooted
+          # accepts no connections for the minute or two before sshd is up. And
+          # checked, because ssh-keyscan failing is the FIRST sign that AWS_HOST
+          # is unreachable - without a message, the step just ends in a bare
+          # "exit code 1" right after the key parsed successfully.
+          touch ~/.ssh/known_hosts
+          scanned=0
+          for attempt in 1 2 3 4 5 6; do
+            if ssh-keyscan -T 10 -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null                && [ -s ~/.ssh/known_hosts ]; then
+              scanned=1
+              break
+            fi
+            echo "No SSH host key from AWS_HOST yet (attempt ${attempt}/6); retrying in 15s."
+            sleep 15
+          done
           chmod 644 ~/.ssh/known_hosts
+
+          if [ "$scanned" -ne 1 ]; then
+            echo "::error::Could not reach SSH on AWS_HOST after about 2 minutes."
+            echo "  The deploy key is fine - it parsed above. The host did not answer on port 22."
+            echo "  Check the instance in the EC2 console:"
+            echo "   1. Instance state is 'Running' (not Stopped / Stopping / Pending)."
+            echo "   2. Its Public IPv4 address still matches the AWS_HOST secret. Stopping and"
+            echo "      starting an instance without an Elastic IP gives it a NEW public IP."
+            echo "   3. Status checks read '2/2 checks passed'. A failed instance check means"
+            echo "      the OS is hung - reboot it from the console."
+            echo "   4. The security group still allows inbound TCP 22."
+            echo "  AWS_HOST is currently ${#AWS_HOST} characters long."
+            exit 1
+          fi
 
       # Only the values that genuinely come from GitHub secrets are assembled
       # here. Database configuration lives in the repository's own .env, copied

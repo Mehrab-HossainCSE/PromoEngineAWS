@@ -53,6 +53,47 @@ die() { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
 log "Detected ${PRETTY_NAME}"
 
 # -----------------------------------------------------------------------------
+# 0. Swap
+#
+# Ubuntu and Amazon Linux AMIs ship with NO swap. With nine containers on a
+# 2 GB instance, the day memory runs short the kernel has nowhere to put cold
+# pages: it evicts the page cache instead, every process starts re-reading its
+# own binary from EBS, and the whole host slows to the point where sshd cannot
+# even send its banner. That is exactly how the first t3.micro deployment died.
+#
+# A modest swap file turns that cliff into a slope. vm.swappiness=10 keeps the
+# kernel from swapping anything it does not have to - this is a safety margin,
+# not extra RAM, and PostgreSQL should never live in it. Done first, so the
+# Docker install below has the headroom too.
+# -----------------------------------------------------------------------------
+SWAP_FILE="/swapfile"
+SWAP_SIZE_MB="${SWAP_SIZE_MB:-2048}"
+
+if [[ -n "$(swapon --show=NAME --noheadings 2>/dev/null)" ]]; then
+  log "Swap already active: $(swapon --show=NAME,SIZE --noheadings | tr -s ' ' | paste -sd ',' -)"
+else
+  # Never trade the database's disk for swap: require the swap size plus 2 GB
+  # to remain free before creating it.
+  free_mb="$(df --output=avail -m / | tail -n 1 | tr -d ' ')"
+  if (( free_mb < SWAP_SIZE_MB + 2048 )); then
+    log "Skipping swap: only ${free_mb} MB free on /, not enough to spare ${SWAP_SIZE_MB} MB."
+  else
+    log "Creating a ${SWAP_SIZE_MB} MB swap file at ${SWAP_FILE}"
+    sudo fallocate -l "${SWAP_SIZE_MB}M" "${SWAP_FILE}"       || sudo dd if=/dev/zero of="${SWAP_FILE}" bs=1M count="${SWAP_SIZE_MB}" status=none
+    sudo chmod 600 "${SWAP_FILE}"
+    sudo mkswap "${SWAP_FILE}" > /dev/null
+    sudo swapon "${SWAP_FILE}"
+    # Persist across reboots.
+    grep -q "^${SWAP_FILE} " /etc/fstab       || echo "${SWAP_FILE} none swap sw 0 0" | sudo tee -a /etc/fstab > /dev/null
+  fi
+fi
+
+if [[ ! -f /etc/sysctl.d/99-promoengine.conf ]]; then
+  echo "vm.swappiness=10" | sudo tee /etc/sysctl.d/99-promoengine.conf > /dev/null
+  sudo sysctl -q -p /etc/sysctl.d/99-promoengine.conf
+fi
+
+# -----------------------------------------------------------------------------
 # 1. Docker Engine + Compose plugin
 # -----------------------------------------------------------------------------
 if command -v docker >/dev/null 2>&1; then
@@ -179,6 +220,7 @@ cat <<SUMMARY
   PostgreSQL volume    : ${POSTGRES_VOLUME}
   Docker network       : ${DOCKER_NETWORK}
   Memory on this host  : $(free -m 2>/dev/null | awk '/^Mem:/{print $2" MB"}' || echo unknown)
+  Swap on this host    : $(free -m 2>/dev/null | awk '/^Swap:/{print $2" MB"}' || echo unknown)
 
   Next:
     1. Security group inbound: 22 from your IP, 80 from 0.0.0.0/0.
