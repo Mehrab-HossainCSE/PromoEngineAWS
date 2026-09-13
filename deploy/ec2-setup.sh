@@ -28,6 +28,13 @@
 set -Eeuo pipefail
 
 APP_DIR="/opt/promoengine"
+
+# Bump this whenever this script gains a step that existing hosts should get.
+# The script writes it to ${APP_DIR}/.host-prepared as its very LAST action, and
+# the deploy pipeline re-runs the script on any host whose marker is missing or
+# different. So a run that dies half way is resumed on the next deploy instead
+# of being mistaken for a finished one, and every step here is safe to repeat.
+SETUP_VERSION=2
 POSTGRES_VOLUME="promoengine-postgres-data"
 DOCKER_NETWORK="promoengine"
 
@@ -172,6 +179,18 @@ sudo mkdir -p "${APP_DIR}"
 sudo chown "${RUN_USER}:${RUN_USER}" "${APP_DIR}"
 chmod 750 "${APP_DIR}"
 
+# The usermod above does not help THIS script. Group membership is read once,
+# at login, so the session running these lines still is not in the docker
+# group, and a plain `docker volume create` is refused with "permission denied
+# while trying to connect to the docker API". Use sudo until a later session
+# picks up the new group. On a host where the user already had the group, plain
+# docker works and sudo is not involved.
+if docker info > /dev/null 2>&1; then
+  DOCKER=(docker)
+else
+  DOCKER=(sudo docker)
+fi
+
 # -----------------------------------------------------------------------------
 # 4. Persistent storage and network
 #
@@ -179,18 +198,18 @@ chmod 750 "${APP_DIR}"
 # with the expected names from the start, and it is an explicit statement that
 # the volume is host state that outlives any individual deployment.
 # -----------------------------------------------------------------------------
-if docker volume inspect "${POSTGRES_VOLUME}" >/dev/null 2>&1; then
+if "${DOCKER[@]}" volume inspect "${POSTGRES_VOLUME}" >/dev/null 2>&1; then
   log "PostgreSQL volume ${POSTGRES_VOLUME} already exists - leaving it alone"
 else
   log "Creating PostgreSQL volume ${POSTGRES_VOLUME}"
-  docker volume create "${POSTGRES_VOLUME}"
+  "${DOCKER[@]}" volume create "${POSTGRES_VOLUME}"
 fi
 
-if docker network inspect "${DOCKER_NETWORK}" >/dev/null 2>&1; then
+if "${DOCKER[@]}" network inspect "${DOCKER_NETWORK}" >/dev/null 2>&1; then
   log "Network ${DOCKER_NETWORK} already exists"
 else
   log "Creating network ${DOCKER_NETWORK}"
-  docker network create --driver bridge "${DOCKER_NETWORK}"
+  "${DOCKER[@]}" network create --driver bridge "${DOCKER_NETWORK}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -213,6 +232,12 @@ JSON
   sudo systemctl restart docker
 fi
 
+# Written last, and only here. If anything above failed, set -e has already
+# stopped the script and this marker does not exist - which is exactly what
+# tells the pipeline to run the whole thing again next time.
+printf '%s
+' "${SETUP_VERSION}" > "${APP_DIR}/.host-prepared"
+
 log "Host preparation complete"
 cat <<SUMMARY
 
@@ -223,10 +248,10 @@ cat <<SUMMARY
   Swap on this host    : $(free -m 2>/dev/null | awk '/^Swap:/{print $2" MB"}' || echo unknown)
 
   Next:
-    1. Security group inbound: 22 from your IP, 80 from 0.0.0.0/0.
+    1. Security group inbound: 22 (GitHub-hosted runners connect from changing
+       addresses), 80 from 0.0.0.0/0, and 3000 from your own IP only if
+       GRAFANA_BIND_ADDRESS is 0.0.0.0 in .env. See MONITORING.md.
        Do NOT open 5432 - PostgreSQL is reachable only inside the Docker network.
-       Nothing extra is needed for monitoring: Grafana binds 127.0.0.1 and is
-       reached over an SSH tunnel. See MONITORING.md.
     2. Add the repository secrets, then push to main. The pipeline copies
        docker-compose.yml and deploy.sh here and starts the stack.
     3. Watch the first deploy with:

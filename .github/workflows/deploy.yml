@@ -529,21 +529,34 @@ jobs:
         run: |
           scp -i ~/.ssh/deploy_key deploy/ec2-setup.sh "$AWS_USER@$AWS_HOST:~/ec2-setup.sh"
 
+          # The version the host must have completed. Read from the script being
+          # shipped, so the two can never disagree.
+          setup_version=$(sed -n 's/^SETUP_VERSION=\([0-9][0-9]*\).*/\1/p' deploy/ec2-setup.sh | head -n 1)
+          if [ -z "$setup_version" ]; then
+            echo "::error::deploy/ec2-setup.sh has no SETUP_VERSION line."
+            exit 1
+          fi
+
           # First connection: decide whether preparation is needed, and do it.
           # The keepalives matter here and nowhere else in this workflow: a
           # Docker install on a fresh instance can sit quiet for minutes, long
           # enough for an idle NAT or security appliance to drop the session.
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes               -o ServerAliveInterval=30 -o ServerAliveCountMax=20               "$AWS_USER@$AWS_HOST" 'bash -s' <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes               -o ServerAliveInterval=30 -o ServerAliveCountMax=20               "$AWS_USER@$AWS_HOST" "SETUP_VERSION_EXPECTED=$setup_version bash -s" <<'REMOTE'
           set -Eeuo pipefail
 
           needs_setup=0
+          # The completion marker is the real test. The tool checks below can all
+          # pass on a host where ec2-setup.sh died half way - Docker installed,
+          # but the volume, network and daemon settings never applied.
+          marker="$(cat /opt/promoengine/.host-prepared 2>/dev/null || true)"
+          [ "$marker" = "$SETUP_VERSION_EXPECTED" ]     || needs_setup=1
           command -v docker > /dev/null 2>&1            || needs_setup=1
           docker compose version > /dev/null 2>&1       || needs_setup=1
           docker ps > /dev/null 2>&1                    || needs_setup=1
           [ -w /opt/promoengine ]                       || needs_setup=1
 
           if [ "$needs_setup" -eq 0 ]; then
-            echo "Host already prepared: $(docker --version), compose $(docker compose version --short)"
+            echo "Host already prepared (setup v$marker): $(docker --version), compose $(docker compose version --short)"
             exit 0
           fi
 
