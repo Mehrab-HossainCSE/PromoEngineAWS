@@ -14,8 +14,9 @@ using PromoEngine.Infrastructure.Tenancy;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
 // ---------------------------------------------------------------------------
-// Options
+// Options sdf 
 // ---------------------------------------------------------------------------
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.Configure<TenancyOptions>(builder.Configuration.GetSection(TenancyOptions.SectionName));
