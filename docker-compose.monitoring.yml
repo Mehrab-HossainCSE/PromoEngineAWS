@@ -115,11 +115,16 @@ services:
 
     environment:
       # -- credentials ------------------------------------------------------
-      # Never hard-coded. deploy.sh generates a random password on the host the
-      # first time and preserves it afterwards, so a redeploy does not change
-      # the login. Override it by adding a GRAFANA_ADMIN_PASSWORD GitHub secret.
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD - deploy.sh generates one if you do not}
+      # From the GRAFANA_USER and GRAFANA_PASSWORD GitHub secrets. Never
+      # hard-coded, and deliberately no default for either: a Grafana that
+      # quietly came up as admin/admin would be worse than one that refuses to
+      # start.
+      #
+      # Grafana only reads these two when it creates its database, on the very
+      # first start. Every later change is applied by deploy.sh, which resets
+      # the admin account to match the secrets after each deploy.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set the GRAFANA_USER GitHub secret}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set the GRAFANA_PASSWORD GitHub secret}
 
       # -- who can get in ---------------------------------------------------
       # No anonymous access, no self-service sign-up. Grafana can query every

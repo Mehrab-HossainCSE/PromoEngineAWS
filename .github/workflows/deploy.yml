@@ -31,16 +31,17 @@
 #                       on the postgres container and Password= in BOTH the
 #                       catalog and the tenant-provisioning connection strings.
 #
-# Two further secrets are OPTIONAL, and only concern the monitoring stack. The
-# deployment works without either one:
+# Three more concern only the monitoring stack:
 #
-#   GRAFANA_ADMIN_PASSWORD    - the Grafana login. If absent, deploy.sh generates
-#                               a random one on the host on first deploy and
-#                               preserves it afterwards. Read it back with
-#                               `sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env`.
-#   GRAFANA_ALERT_WEBHOOK_URL - a Slack/Teams/on-call incoming webhook. If absent,
-#                               alerts still fire and show in Grafana; they are
-#                               simply not sent anywhere.
+#   GRAFANA_USER              - Grafana admin login name. REQUIRED while
+#                               MONITORING_ENABLED=true in .env.
+#   GRAFANA_PASSWORD          - Grafana admin password. REQUIRED likewise.
+#                               deploy.sh applies both to Grafana on every
+#                               deploy, so changing a secret and pushing changes
+#                               the login - there is nothing to set on the host.
+#   GRAFANA_ALERT_WEBHOOK_URL - OPTIONAL. A Slack/Teams/on-call incoming webhook.
+#                               If absent, alerts still fire and show in Grafana;
+#                               they are simply not sent anywhere.
 #
 # The two files are copied separately and merged by deploy.sh, secrets last, so
 # a secret always wins over a committed value. No secret is ever echoed: GitHub
@@ -258,6 +259,7 @@ jobs:
           DOCKER_USERNAME=validation-only
           JWT_SIGNING_KEY=validation-only
           EXTERNAL_API_KEY=validation-only
+          GRAFANA_ADMIN_USER=validation-only
           GRAFANA_ADMIN_PASSWORD=validation-only
           ENV
 
@@ -380,7 +382,8 @@ jobs:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          GRAFANA_USER: ${{ secrets.GRAFANA_USER }}
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
           GRAFANA_ALERT_WEBHOOK_URL: ${{ secrets.GRAFANA_ALERT_WEBHOOK_URL }}
         run: |
           umask 077
@@ -391,10 +394,12 @@ jobs:
             echo "POSTGRES_DB=${POSTGRES_DB}"
             echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 
-            # Both optional. deploy.sh skips empty values when merging, so an
-            # unset secret leaves whatever the host already has - which for the
-            # Grafana password is the one generated on the first deploy.
-            echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
+            # The Grafana login. Renamed on the way through: docker-compose and
+            # deploy.sh call these GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD.
+            echo "GRAFANA_ADMIN_USER=${GRAFANA_USER}"
+            echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_PASSWORD}"
+
+            # Optional. deploy.sh skips empty values when merging.
             echo "GRAFANA_ALERT_WEBHOOK_URL=${GRAFANA_ALERT_WEBHOOK_URL}"
           } > env.ci
           echo "Wrote the secret overlay with $(wc -l < env.ci) settings."
@@ -409,9 +414,51 @@ jobs:
           [ -n "${POSTGRES_DB}" ]       || missing="${missing} POSTGRES_DB"
           [ -n "${DOCKER_USERNAME}" ]   || missing="${missing} DOCKER_USERNAME"
 
+          # The Grafana login is only needed when the monitoring overlay is on,
+          # and whether it is on is decided by the committed .env.
+          if grep -qx 'MONITORING_ENABLED=true' .env; then
+            [ -n "${GRAFANA_USER}" ]     || missing="${missing} GRAFANA_USER"
+            [ -n "${GRAFANA_PASSWORD}" ] || missing="${missing} GRAFANA_PASSWORD"
+          fi
+
           if [ -n "${missing}" ]; then
             echo "::error::Missing repository secret(s):${missing} - add them under Settings > Secrets and variables > Actions."
             exit 1
+          fi
+
+          if grep -qx 'MONITORING_ENABLED=true' .env; then
+            # A login name goes into a curl credential and a JSON body on the
+            # host. Plain characters only keeps both unambiguous.
+            case "${GRAFANA_USER}" in
+              *[!A-Za-z0-9._@-]*)
+                echo "::error::GRAFANA_USER may contain only letters, digits, '.', '_', '-' and '@'."
+                exit 1
+                ;;
+            esac
+
+            # Same rule as POSTGRES_PASSWORD: Compose expands \$NAME when it reads
+            # .env, so Grafana would be created with a different password than
+            # the secret holds.
+            case "${GRAFANA_PASSWORD}" in
+              *'$'*)
+                echo "::error::GRAFANA_PASSWORD contains a '\$' character, which Docker Compose would rewrite. Choose one without '\$'."
+                exit 1
+                ;;
+              \"*|\'*)
+                echo "::error::GRAFANA_PASSWORD starts with a quote, which the .env parser would strip. Choose one that does not."
+                exit 1
+                ;;
+            esac
+
+            # Grafana serves over plain HTTP here and is published on the public
+            # interface, so this password is the whole of its protection.
+            if [ "${#GRAFANA_PASSWORD}" -lt 12 ]; then
+              echo "::error::GRAFANA_PASSWORD is only ${#GRAFANA_PASSWORD} characters; use at least 12."
+              echo "  Grafana can read every metric and log line in the stack. Generate one with:"
+              echo "    openssl rand -base64 24 | tr -d '/+='"
+              exit 1
+            fi
+            echo "GRAFANA_USER is ${#GRAFANA_USER} characters; GRAFANA_PASSWORD is ${#GRAFANA_PASSWORD} characters."
           fi
 
           # Shape checks on POSTGRES_PASSWORD. The value is never echoed - only
@@ -763,18 +810,18 @@ jobs:
             echo ""
             echo "#### Monitoring"
             echo ""
-            echo "Grafana is published on the instance's loopback interface only, so it is not"
-            echo "reachable from the internet. Open it through an SSH tunnel:"
+            if grep -qx 'GRAFANA_BIND_ADDRESS=127.0.0.1' .env; then
+              echo "Grafana is on the instance's loopback interface only. Open it through an SSH tunnel:"
+              echo ""
+              echo '```'
+              echo "ssh -i <your-key>.pem -L 3000:localhost:3000 ${AWS_USER}@${AWS_HOST}"
+              echo '```'
+              echo ""
+              echo "then browse to <http://localhost:3000>."
+            else
+              echo "Grafana: <http://${AWS_HOST}:3000>"
+            fi
             echo ""
-            echo '```'
-            echo "ssh -i <your-key>.pem -L 3000:localhost:3000 ${AWS_USER}@${AWS_HOST}"
-            echo '```'
-            echo ""
-            echo "Then browse to <http://localhost:3000>. Dashboards: EC2 Host, Docker Containers,"
-            echo "Backend API, Logs. The admin password is generated on the host unless the"
-            echo "\`GRAFANA_ADMIN_PASSWORD\` secret is set:"
-            echo ""
-            echo '```'
-            echo "sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env"
-            echo '```'
+            echo "Log in with the \`GRAFANA_USER\` and \`GRAFANA_PASSWORD\` repository secrets."
+            echo "Dashboards: EC2 Host, Docker Containers, Backend API, Logs."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -168,7 +168,6 @@ default_env LOG_LEVEL               "Information"
 default_env MONITORING_ENABLED         "true"
 default_env GRAFANA_BIND_ADDRESS       "127.0.0.1"
 default_env GRAFANA_PORT               "3000"
-default_env GRAFANA_ADMIN_USER         "admin"
 default_env GRAFANA_COOKIE_SECURE      "false"
 default_env GRAFANA_LOG_LEVEL          "warn"
 default_env PROMETHEUS_RETENTION_TIME  "15d"
@@ -182,16 +181,10 @@ default_env CADVISOR_MEM_LIMIT         "256m"
 default_env MONITORING_ENVIRONMENT     "production"
 default_env MONITORING_HOSTNAME        "$(hostname -s 2>/dev/null || echo ec2)"
 
-# Grafana can read every metric and every log line in the stack, so it gets a
-# real password. Generated here on first deploy and preserved afterwards, exactly
-# like JWT_SIGNING_KEY - regenerating it on every push would lock you out of your
-# own dashboards on every push. Setting a GRAFANA_ADMIN_PASSWORD GitHub secret
-# overrides it, because env.ci is merged before this runs.
-#
-# Note that Grafana, like PostgreSQL, only reads this the FIRST time: the admin
-# password afterwards lives in Grafana's own database inside the grafana-data
-# volume. Changing it later needs `grafana-cli admin reset-admin-password`.
-ensure_generated GRAFANA_ADMIN_PASSWORD
+# The Grafana login is NOT generated here. It comes from the GRAFANA_USER and
+# GRAFANA_PASSWORD GitHub secrets through env.ci, is required whenever monitoring
+# is on (checked below), and is pushed into Grafana after every deploy by
+# sync_grafana_admin - see section 4b.
 
 # Where Grafana believes it is reachable. Only used for the links inside alert
 # notifications, but a wrong value there sends people to a dead URL during an
@@ -243,6 +236,13 @@ if [[ "$(read_env MONITORING_ENABLED)" == "true" ]]; then
   if [[ -f "${MONITORING_COMPOSE_FILE}" && -d "${MONITORING_DIR}" ]]; then
     COMPOSE_ARGS+=(-f "${MONITORING_COMPOSE_FILE}")
     MONITORING_ON=1
+
+    # Required rather than defaulted. The pipeline already refuses to run
+    # without them; this is the guard for a hand-run deploy.
+    [[ -n "$(read_env GRAFANA_ADMIN_USER)" ]] \
+      || die "GRAFANA_ADMIN_USER is not set. It comes from the GRAFANA_USER GitHub secret."
+    [[ -n "$(read_env GRAFANA_ADMIN_PASSWORD)" ]] \
+      || die "GRAFANA_ADMIN_PASSWORD is not set. It comes from the GRAFANA_PASSWORD GitHub secret."
   else
     warn "MONITORING_ENABLED=true but ${MONITORING_COMPOSE_FILE} or ${MONITORING_DIR} is missing."
     warn "Deploying the application without monitoring. The pipeline copies both;"
@@ -432,6 +432,107 @@ if (( MONITORING_ON == 1 )); then
   wait_for "Grafana is serving" 120 'database' \
     probe 'http://grafana:3000/api/health' \
     || warn "Grafana did not answer /api/health. Try: compose logs grafana"
+
+  # 1b. Make the admin login match the GitHub secrets.
+  #
+  # GF_SECURITY_ADMIN_USER and GF_SECURITY_ADMIN_PASSWORD are read ONCE, when
+  # Grafana first creates its database in the grafana-data volume. After that
+  # they are ignored - so without this step, changing either secret would change
+  # nothing, and the login would still be whatever it was on day one.
+  #
+  # Order matters, and so does doing as little as possible:
+  #   1. If the secrets already log in, stop. Resetting a password that is
+  #      already correct would sign every open session out on every deploy.
+  #   2. Otherwise reset admin user 1's password with grafana cli. That needs no
+  #      credentials, so it works whatever the password was before.
+  #   3. If the login NAME still does not match, rename user 1 through the API,
+  #      authenticating by its email, since the old login name is unknown.
+  #
+  # Credentials never appear on a command line: the CLI reads the password from
+  # stdin, and curl reads its user:password from a config file on stdin. Nothing
+  # here is printed.
+  sync_grafana_admin() {
+    local user pw bind port base code current body esc_pw
+
+    user="$(read_env GRAFANA_ADMIN_USER)"
+    pw="$(read_env GRAFANA_ADMIN_PASSWORD)"
+    port="$(read_env GRAFANA_PORT)"
+    bind="$(read_env GRAFANA_BIND_ADDRESS)"
+    [[ "${bind}" == "0.0.0.0" || -z "${bind}" ]] && bind="127.0.0.1"
+    base="http://${bind}:${port}"
+
+    # curl config quoting: backslash and double quote are the only special
+    # characters inside a quoted value.
+    esc_pw=${pw//\\/\\\\}
+    esc_pw=${esc_pw//\"/\\\"}
+
+    # $1 = login or email to authenticate as; the rest are curl arguments.
+    grafana_api() {
+      local who="$1"; shift
+      printf 'user = "%s:%s"\n' "${who}" "${esc_pw}" \
+        | curl -K - --silent --max-time 10 "$@"
+    }
+
+    code="$(grafana_api "${user}" -o /dev/null -w '%{http_code}' "${base}/api/user" || true)"
+    if [[ "${code}" == "200" ]]; then
+      printf '  [ ok ] Grafana login already matches the GRAFANA_USER / GRAFANA_PASSWORD secrets\n'
+      return 0
+    fi
+
+    if ! printf '%s\n' "${pw}" \
+         | compose exec -T grafana grafana cli admin reset-admin-password --password-from-stdin \
+           > /dev/null 2>&1; then
+      warn "Could not reset the Grafana admin password. Grafana's password policy may reject it."
+      return 1
+    fi
+
+    code="$(grafana_api "${user}" -o /dev/null -w '%{http_code}' "${base}/api/user" || true)"
+    if [[ "${code}" == "200" ]]; then
+      printf '  [ ok ] Grafana admin password updated from GRAFANA_PASSWORD\n'
+      return 0
+    fi
+
+    # The password is right but the login name is not. Grafana's basic auth
+    # accepts an email in place of a login, and the built-in admin's email is
+    # admin@localhost unless someone changed it in the UI.
+    current="$(grafana_api "admin@localhost" --fail "${base}/api/users/1" || true)"
+    if [[ -z "${current}" ]]; then
+      warn "Could not rename the Grafana admin to the GRAFANA_USER value."
+      warn "The password is set, but the admin's email is no longer admin@localhost,"
+      warn "so its current login could not be found. Log in with the old username."
+      return 1
+    fi
+
+    body="$(python3 -c '
+import json, sys
+u = json.loads(sys.argv[2])
+new = sys.argv[1]
+name = u.get("name") or ""
+print(json.dumps({
+    "login": new,
+    "email": u.get("email") or "admin@localhost",
+    # Keep a real display name; replace only the default one.
+    "name": new if name in ("", "admin", u.get("login")) else name,
+}))' "${user}" "${current}")"
+
+    code="$(grafana_api "admin@localhost" -o /dev/null -w '%{http_code}' \
+              -X PUT -H 'Content-Type: application/json' --data "${body}" \
+              "${base}/api/users/1" || true)"
+    if [[ "${code}" != "200" ]]; then
+      warn "Grafana refused to rename the admin user (HTTP ${code})."
+      return 1
+    fi
+
+    code="$(grafana_api "${user}" -o /dev/null -w '%{http_code}' "${base}/api/user" || true)"
+    if [[ "${code}" == "200" ]]; then
+      printf '  [ ok ] Grafana admin login updated from GRAFANA_USER and GRAFANA_PASSWORD\n'
+      return 0
+    fi
+    warn "Grafana admin was updated but the new login still does not authenticate (HTTP ${code})."
+    return 1
+  }
+
+  sync_grafana_admin || MONITORING_DEGRADED=1
 
   # 2. Metrics. `up == 1` for the backend job is the single best proof that the
   #    application is exporting metrics AND that Prometheus can route to it

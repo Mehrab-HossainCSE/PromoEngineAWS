@@ -104,7 +104,7 @@ read every metric in the system, so it stays on the private Docker network.
 | `PromoBackend/.../PromoEngine.Api.csproj` | Four OpenTelemetry packages |
 | `PromoBackend/.../Program.cs` | Two lines: register the exporter, map `/metrics` |
 | `docker-compose.yml` | Two `Metrics__*` environment variables on the backend |
-| `deploy/deploy.sh` | Applies the overlay, generates the Grafana password, verifies the pipeline |
+| `deploy/deploy.sh` | Applies the overlay, syncs the Grafana login from secrets, verifies the pipeline |
 | `.github/workflows/deploy.yml` | New `validate-monitoring` job; copies `monitoring/`; reports status |
 | `.env` | Monitoring tunables |
 | `PromoFrontend/nginx/default.conf` | Explicitly refuses public `/metrics` |
@@ -293,24 +293,19 @@ ssh -i your-key.pem -L 3000:localhost:3000 ubuntu@<ec2-public-ip>
 
 Then open <http://localhost:3000>.
 
-**Username:** `admin`
+**Username and password:** the `GRAFANA_USER` and `GRAFANA_PASSWORD` repository
+secrets. Both are required while `MONITORING_ENABLED=true`.
 
-**Password:** generated on the host on the first deploy and preserved after that.
-Read it back with:
+To change the login, edit the secret and push. That is the whole procedure.
 
-```bash
-sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env
-```
+Behind that: Grafana itself only reads its admin user and password when it
+first creates its database, and ignores them afterwards. So after every deploy
+`deploy.sh` checks whether the secrets log in and, only if they do not, resets
+admin user 1's password with `grafana cli` and renames the account through the
+API. A deploy where nothing changed touches nothing and signs nobody out.
 
-To set it yourself, add a `GRAFANA_ADMIN_PASSWORD` GitHub secret. Note that
-Grafana, like PostgreSQL, only reads that on **first** start — afterwards the
-password lives in Grafana's own database inside the `grafana-data` volume.
-Changing it later needs:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml \
-  exec grafana grafana cli admin reset-admin-password '<new password>'
-```
+One consequence to know: **a password changed in the Grafana UI is overwritten
+on the next deploy.** The secrets are the source of truth.
 
 ### Exposing it directly instead
 
@@ -417,7 +412,8 @@ Only one is mandatory.
 
 Optional:
 
-2. **`GRAFANA_ADMIN_PASSWORD` secret** — otherwise one is generated for you.
+2. **`GRAFANA_USER` and `GRAFANA_PASSWORD` secrets** — required, not optional.
+   The password must be at least 12 characters and contain no `$`.
 3. **`GRAFANA_ALERT_WEBHOOK_URL` secret** — otherwise alerts fire but are not
    delivered anywhere.
 4. **Security group** — nothing to change. Grafana is on loopback; only open port

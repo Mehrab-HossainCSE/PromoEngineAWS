@@ -545,8 +545,8 @@ through an SSH tunnel:
 
 ```bash
 ssh -i your-key.pem -L 3000:localhost:3000 ubuntu@<ec2-public-ip>
-# then open http://localhost:3000  (user: admin)
-sudo grep ^GRAFANA_ADMIN_PASSWORD= /opt/promoengine/.env   # the generated password
+# then open http://localhost:3000
+# log in with the GRAFANA_USER and GRAFANA_PASSWORD repository secrets
 ```
 
 **One prerequisite:** the monitoring stack needs roughly 700–900 MB on top of the
